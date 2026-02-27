@@ -1,0 +1,2278 @@
+// ==UserScript==
+// @name         📌 LegalMind OS — Painel Exclusivo v4.0
+// @namespace    https://seuescritorio.com.br/
+// @version      4.0.0
+// @description  Schema por caso, A-Z, Ficha Viva, Gerador IA, Timeline, Injetor Inteligente, Dashboard. Compatible com LegalMind OS 12.x.
+// @match        https://chatgpt.com/*
+// @match        https://gemini.google.com/*
+// @match        https://aistudio.google.com/*
+// @match        https://copilot.microsoft.com/*
+// @match        https://claude.ai/*
+// @match        https://chat.deepseek.com/*
+// @run-at       document-end
+// @grant        GM_setValue
+// @grant        GM_getValue
+// @grant        GM_addStyle
+// ==/UserScript==
+
+(function () {
+    "use strict";
+
+    const CASE_KEY   = "legalmind_v11_case";
+    const WALLET_KEY = "legalmind_v11_wallet";
+
+    // ─── DETECÇÃO DE PLATAFORMA ───────────────────────────────────────────────
+    function detectPlatform(){
+        const h = location.hostname;
+        if(h.includes('chatgpt.com'))        return { name:'ChatGPT',   selector:'#prompt-textarea', type:'contenteditable' };
+        if(h.includes('claude.ai'))          return { name:'Claude',    selector:'div[contenteditable="true"].ProseMirror', type:'contenteditable' };
+        if(h.includes('gemini.google.com'))  return { name:'Gemini',    selector:'.ql-editor', type:'contenteditable' };
+        if(h.includes('aistudio.google'))    return { name:'AI Studio', selector:'textarea', type:'textarea' };
+        if(h.includes('copilot.microsoft')) return { name:'Copilot',   selector:'textarea', type:'textarea' };
+        if(h.includes('deepseek.com'))       return { name:'DeepSeek',  selector:'textarea', type:'textarea' };
+        return null;
+    }
+
+    const PROMPT_TEMPLATE = `Voce e um assistente especializado em direito brasileiro e estruturacao de dados juridicos.
+Analise a descricao do caso juridico fornecida e crie um schema JSON estruturado para o sistema LegalMind OS.
+OBJETIVO: Identificar as areas juridicas, secoes tematicas e campos especificos que esse tipo de caso exige,
+E tambem pre-preencher com os dados ja disponiveis na descricao.
+
+REGRAS OBRIGATORIAS:
+1. Responda APENAS com o JSON - sem explicacoes, sem markdown, sem texto antes ou depois
+2. Os IDs dos campos devem ser unicos e descritivos, usados como {{campo_id}} nos prompts
+3. Use nomes de IDs sem espacos (use _ em vez de espaco). Ex: "Data_Inicio", "Nome_Empresa"
+4. Campos padrao - use EXATAMENTE este ID: "Nome do Cliente", "CPF", "NB/Processo", "Processo", "DER", "DIB", "DIP", "RMI", "CID", "Data de Admissao", "Data de Demissao", "Funcao", "Tipo de Rescisao", "Vara/Comarca", "Cidade"
+5. Use emojis para as areas
+6. Cores em hex: #4ec9b0, #ce9178, #569cd6, #d7ba7d, #c586c0, #dcdcaa, #a8cc8c, #e8965a, #4fc1ff
+7. Marque todas as areas com "_custom": true
+8. IMPORTANTE: Inclua um objeto "fields" no JSON com os valores que voce conseguir extrair da descricao.
+   - Para campos padrao, use EXATAMENTE os IDs padrao listados acima
+   - Para campos das areas, use os mesmos IDs definidos em areas[].sections[].fields[].id
+   - Deixe vazio ("") os campos que nao puder extrair da descricao
+   - Pre-preencha tudo que estiver disponivel: nomes, datas, numeros de processo, CIDs, funcoes, etc.
+
+ESTRUTURA JSON OBRIGATORIA:
+{
+  "_legalMindCasoSchema": true,
+  "_version": 1,
+  "_exportedAt": "DATA_ATUAL_ISO",
+  "fields": {
+    "Nome do Cliente": "valor extraido ou vazio",
+    "CPF": "",
+    "NB/Processo": "",
+    "Processo": "",
+    "Vara/Comarca": "",
+    "Cidade": "",
+    "campo_id_customizado": "valor extraido ou vazio"
+  },
+  "areas": [
+    {
+      "id": "area_IDENTIFICADOR_UNICO",
+      "label": "Nome da Area Juridica",
+      "icon": "EMOJI",
+      "color": "#COR_HEX",
+      "_custom": true,
+      "sections": [
+        {
+          "id": "sec_IDENTIFICADOR_UNICO",
+          "label": "Nome da Secao Tematica",
+          "fields": [
+            {
+              "id": "Chave_Variavel_Sem_Espacos_Ou_Igual_Ao_Padrao",
+              "label": "Label visivel para o usuario",
+              "placeholder": "Dica de preenchimento (ex: DD/MM/AAAA)"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
+
+DESCRICAO DO CASO:
+{DESCRICAO}
+
+Gere agora o JSON completo para este caso, com o objeto "fields" pre-preenchido com todos os dados que conseguir extrair:`;
+
+    const MASTER_PROMPT_TEMPLATE = `Você é um assistente especializado em Direito brasileiro e em engenharia de fluxos de trabalho jurídico com IA.
+
+Sua missão é analisar o caso descrito e gerar uma bateria completa de prompts sequenciais, com um sistema robusto que garanta que nenhuma informação relevante se perca entre os passos — mesmo em fluxos com 10, 20 ou mais prompts.
+
+CASO CONCRETO:
+{CASO_CONCRETO}
+
+════════════════════════════════════════════════════════
+CONVENÇÃO DE NOTAÇÃO DESTE DOCUMENTO — LEIA ANTES DE TUDO
+════════════════════════════════════════════════════════
+
+Este documento usa DUAS notações distintas para variáveis:
+
+  ANGULO    →  Aparece SOMENTE neste documento como EXEMPLO DIDÁTICO.
+               No output gerado, escreva o mesmo nome entre CHAVES DUPLAS.
+               Não é uma variável real — é apenas texto instrucional.
+
+  CHAVES DUPLAS →  É o formato REAL e OBRIGATÓRIO que você deve usar em
+                   TODO conteúdo gerado (prompts e JSON).
+                   Escreva: {{ nome }}
+
+REGRA DE OURO: Sempre que ver um nome em ângulos neste documento, no output
+gerado escreva o mesmo nome entre chaves duplas — sem espaços entre as chaves e o nome.
+
+════════════════════════════════════════════════════════
+REGRA CRÍTICA — VARIÁVEIS NO OUTPUT GERADO
+════════════════════════════════════════════════════════
+
+O sistema LegalMind OS usa variáveis com CHAVES DUPLAS para substituição dinâmica.
+Toda variável que o usuário preenche ou que carrega contexto entre prompts
+DEVE estar no formato {{nome da variavel}}.
+
+REGRAS ABSOLUTAS:
+1. SEMPRE use chaves duplas para variáveis — NUNCA colchetes, parênteses ou outros delimitadores.
+2. NUNCA remova, simplifique ou altere as chaves duplas, nem dentro do JSON, nem fora.
+3. NUNCA coloque aspas dentro das chaves.
+4. Preserve espaços em nomes compostos: {{Ficha Viva do Caso}} é diferente de {{FichaVivaDoCaso}}
+5. Dentro de strings JSON, as chaves duplas não precisam de escape — escreva literalmente.
+
+Variáveis padrão do sistema (use exatamente estes nomes entre chaves duplas):
+  - {{Ficha Viva do Caso}}     — memória acumulada entre prompts (CRÍTICO — nome exato)
+  - {{Nome do Cliente}}        — nome do cliente/parte
+  - {{CPF}}                    — CPF do cliente
+  - {{NB/Processo}}            — número do benefício ou processo
+  - {{Cidade}}                 — comarca/cidade do processo
+  - {{Colar PPP}}              — para colar o documento PPP
+  - {{Colar CTPS}}             — para colar a CTPS
+  - {{Colar Laudo}}            — para colar laudo médico
+  (use o padrão {{Colar [nome do documento]}} para qualquer documento que precise ser colado)
+
+════════════════════════════════════════════════════════
+FASE 1 — ANÁLISE ESTRATÉGICA DO CASO
+════════════════════════════════════════════════════════
+
+Antes de gerar qualquer prompt, responda:
+
+1. Qual área do Direito e tipo de ação/procedimento?
+2. Quais documentos precisam ser analisados e em que ordem?
+3. Qual é a peça processual final?
+4. Quais informações de cada documento são críticas para a peça final?
+5. Quais variáveis (nome, CPF, datas etc.) se repetem entre prompts?
+6. Quantos prompts serão necessários? Se mais de 7, identifique onde inserir Prompts de Consolidação (a cada 5-6 passos de análise).
+
+════════════════════════════════════════════════════════
+FASE 2 — SUGESTÃO DE ORGANIZAÇÃO DE PASTAS
+════════════════════════════════════════════════════════
+
+Pastas existentes no painel (USE OS IDs EXATOS para o campo "folderId"):
+
+| ID da pasta          | Caminho completo                                           |
+|----------------------|------------------------------------------------------------|
+| prev_adm_ppp         | Previdenciário > Administrativo > Análise PPP/LTCAT        |
+| prev_adm_rec         | Previdenciário > Administrativo > Recursos Administrativos |
+| prev_jud_ini         | Previdenciário > Judicial > Iniciais (Caso Concreto)       |
+| prev_jud_rec         | Previdenciário > Judicial > Recursos                       |
+| prev_jud_cump        | Previdenciário > Judicial > Cumprimento de Sentença        |
+| trab_recl            | Trabalhista > Polo Ativo (Reclamante)                      |
+| trab_recd            | Trabalhista > Polo Passivo (Reclamada)                     |
+| trab_calc            | Trabalhista > Cálculos e TRCT                              |
+| saude_lim            | Saúde > Liminares e Tutelas                                |
+| saude_rec            | Saúde > Recursos Plano de Saúde                            |
+| gest_cli             | Gestão > Gestão de Clientes                                |
+| gest_chain           | Gestão > Fluxos Encadeados                                 |
+
+Se o caso exigir pasta nova (não listada acima):
+- Crie um ID único no padrão snake_case sem acentos
+- Defina o pai (parentId) usando os IDs de raiz: root_prev, root_trab, root_saude, root_gestao
+- Inclua essa pasta na seção "folders" do JSON final
+
+════════════════════════════════════════════════════════
+FASE 3 — SISTEMA DE MEMÓRIA
+════════════════════════════════════════════════════════
+
+O maior risco em fluxos longos é a amnésia progressiva da IA.
+A solução usa TRÊS mecanismos combinados:
+
+MECANISMO 1 — FICHA VIVA DO CASO
+Todo prompt de análise termina com este bloco de atualização:
+
+═══════════════════════════════════════
+FICHA VIVA DO CASO — atualize ao final
+═══════════════════════════════════════
+DOCUMENTO ANALISADO: [nome do documento]
+FATOS RELEVANTES IDENTIFICADOS: [...]
+INCONSISTÊNCIAS / PROBLEMAS ENCONTRADOS: [...]
+TESES JURÍDICAS IDENTIFICADAS: [...]
+DADOS EXTRAÍDOS (datas, valores, nomes, códigos): [...]
+IMPACTO NA PEÇA FINAL: [...]
+═══════════════════════════════════════
+
+MECANISMO 2 — PROMPT DE CONSOLIDAÇÃO (a cada 5-6 análises)
+Quando o fluxo tiver mais de 6 prompts de análise, insira um Prompt de Consolidação
+que receba a {{Ficha Viva do Caso}} e produza uma FICHA CONSOLIDADA DO CASO.
+
+MECANISMO 3 — ABERTURA OBRIGATÓRIA DE CADA PROMPT
+Todo prompt (exceto o Prompt 1) deve abrir com:
+
+MEMÓRIA DO CASO — leia, processe e mantenha ativa:
+{{Ficha Viva do Caso}}
+INSTRUÇÃO: Antes de executar qualquer tarefa abaixo, releia cada item da Ficha acima.
+
+════════════════════════════════════════════════════════
+FASE 4 — BATERIA DE PROMPTS
+════════════════════════════════════════════════════════
+
+Gere todos os prompts na ordem de uso, obedecendo o formato abaixo.
+No campo PROMPT, toda variável (incluindo {{Ficha Viva do Caso}},
+{{Nome do Cliente}}, {{CPF}} etc.) deve estar entre chaves duplas.
+
+Para cada prompt:
+TÍTULO: [máx. 60 caracteres]
+PASTA: [ID da pasta]
+ALIAS: /[palavra curta sem espaço]
+DESCRIÇÃO: [máx. 120 caracteres]
+TAGS: #[área] #[tipo] #[matéria]
+VARIÁVEIS: [lista]
+REQUER ARQUIVO: [Sim / Não]
+AUTO-ENVIAR: Não
+PROMPT: [Texto completo com abertura de memória + análise + atualização da Ficha ao final]
+
+════════════════════════════════════════════════════════
+FASE 5 — ENTREGÁVEL NARRATIVO
+════════════════════════════════════════════════════════
+
+Após gerar todos os prompts, apresente:
+1. MAPA DO FLUXO COM SISTEMA DE MEMÓRIA
+   Tabela: Nº | Nome | O que analisa | O que extrai | Tipo
+2. INSTRUÇÕES DE USO DO SISTEMA DE MEMÓRIA
+3. ALERTAS ESPECÍFICOS DO CASO
+4. SUGESTÃO DE CHAIN: quais prompts podem rodar em Chain automático e quais exigem pausa.
+
+════════════════════════════════════════════════════════
+FASE 6 — JSON DE IMPORTAÇÃO PARA O SISTEMA LEGALMIND
+════════════════════════════════════════════════════════
+
+Após apresentar a bateria narrativa das Fases 1 a 5, gere o JSON de importação.
+
+REGRAS ABSOLUTAS:
+1. Estrutura obrigatória com "_legalMindFull": true, "_version": "12.0"
+2. "folders": apenas pastas NOVAS (não existentes na tabela da Fase 2)
+3. "templates": um objeto por prompt com todos os campos obrigatórios
+4. Variáveis no campo "text": use CHAVES DUPLAS reais ({{nome}})
+5. Escape aspas duplas dentro de strings JSON com \"
+6. Use \n para quebras de linha dentro de campos "text"
+
+FORMATO DE SAÍDA DO JSON — OBRIGATÓRIO:
+▼▼▼ LEGALMIND_JSON_START ▼▼▼
+{ ... json completo aqui ... }
+▲▲▲ LEGALMIND_JSON_END ▲▲▲`;
+
+    const GLOBAL_FIELDS = [
+        { id:'Nome do Cliente', label:'Nome do Cliente',       ph:'Nome completo',              span:2 },
+        { id:'CPF',             label:'CPF',                   ph:'000.000.000-00',             span:1 },
+        { id:'NB/Processo',     label:'NB / Processo',         ph:'Nr beneficio ou processo',   span:1 },
+        { id:'Processo',        label:'Processo CNJ',          ph:'0000000-00.0000.0.00.0000',  span:2 },
+        { id:'Vara/Comarca',    label:'Vara / Comarca',        ph:'Ex: 3a Vara Civel de SP',    span:1 },
+        { id:'Cidade',          label:'Cidade',                ph:'Cidade',                     span:1 },
+        { id:'Advogado',        label:'Advogado Responsavel',  ph:'Dr. Nome - OAB/UF 000.000',  span:2 },
+    ];
+
+    let activeCase  = loadActive();
+    let wallet      = loadWallet();
+    let editing     = null;
+    let activeTab   = 'global';
+    let globalSecOpen = {};
+    let panelOpen   = false;
+    let sidebarQ    = '';
+    let activeDashboard = false;
+
+    function loadActive() { const v=GM_getValue(CASE_KEY,null); return v&&v.id?v:null; }
+    function loadWallet() {
+        const arr=GM_getValue(WALLET_KEY,[]);
+        if(!Array.isArray(arr)) return [];
+        return arr.map(c=>({
+            id:c.id||genId(),
+            name:c.name||'',
+            fields:c.fields||{},
+            fichaViva:c.fichaViva||'',
+            ts:c.ts||Date.now(),
+            schema:(c.schema&&Array.isArray(c.schema.areas))?c.schema:null,
+            timeline:c.timeline||[],
+            prazo:c.prazo||null,
+            status:c.status||'ativo'
+        }));
+    }
+    function saveWallet() { GM_setValue(WALLET_KEY,wallet); }
+    function saveActive() { GM_setValue(CASE_KEY,activeCase); }
+    function genId()  { return Date.now().toString(36)+Math.random().toString(36).slice(2,7); }
+    function escH(s)  { return (s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
+    function deep(o)  { return JSON.parse(JSON.stringify(o)); }
+    function wCount(t){ const n=(t||'').trim().split(/\s+/).filter(Boolean).length; return n+' '+(n===1?'palavra':'palavras'); }
+    function timeAgo(ts){
+        if(!ts)return''; const d=Date.now()-ts;
+        if(d<60000)return'agora'; if(d<3600000)return Math.floor(d/60000)+'min';
+        if(d<86400000)return Math.floor(d/3600000)+'h'; return Math.floor(d/86400000)+'d';
+    }
+    function fmtDate(ts){
+        if(!ts) return '—';
+        return new Date(ts).toLocaleDateString('pt-BR',{day:'2-digit',month:'2-digit',year:'numeric',hour:'2-digit',minute:'2-digit'});
+    }
+
+    // ─── TIMELINE ────────────────────────────────────────────────────────────
+    function addTimeline(caseObj, action, detail=''){
+        if(!caseObj) return;
+        if(!caseObj.timeline) caseObj.timeline=[];
+        caseObj.timeline.unshift({ id:genId(), ts:Date.now(), action, detail });
+        if(caseObj.timeline.length>200) caseObj.timeline=caseObj.timeline.slice(0,200);
+    }
+
+    function parseSchema(raw){
+        try{
+            let t=raw.trim().replace(/^```json\s*/i,'').replace(/^```/,'').replace(/```\s*$/,'').trim();
+            const p=JSON.parse(t); const s=p.schema||p;
+            if(!Array.isArray(s.areas)||!s.areas.length) return null;
+            const preFields = (s.fields && typeof s.fields==='object') ? s.fields : {};
+            const filteredFields = {};
+            Object.entries(preFields).forEach(([k,v])=>{ if(v && String(v).trim()) filteredFields[k]=String(v).trim(); });
+            return {areas:s.areas, fields:filteredFields};
+        }catch{return null;}
+    }
+
+    // ════════════════════════════════════════════════════════════════════════
+    // CSS v4.0 — Estética renovada: refinamento profissional de alta densidade
+    // ════════════════════════════════════════════════════════════════════════
+    GM_addStyle(`
+        @import url('https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,300;0,9..40,400;0,9..40,500;0,9..40,600;0,9..40,700;1,9..40,400&family=DM+Mono:wght@400;500&display=swap');
+
+        :root {
+            --lm-bg:       #141414;
+            --lm-bg2:      #1a1a1a;
+            --lm-bg3:      #1f1f1f;
+            --lm-border:   #2a2a2a;
+            --lm-border2:  #333;
+            --lm-text:     #d8d8d8;
+            --lm-text2:    #888;
+            --lm-text3:    #4a4a4a;
+            --lm-green:    #4ec9b0;
+            --lm-green2:   #2ea882;
+            --lm-green-bg: #0d2218;
+            --lm-blue:     #79b8ff;
+            --lm-blue-bg:  #0d1c2e;
+            --lm-amber:    #d7ba7d;
+            --lm-red:      #f47c7c;
+            --lm-purple:   #c586c0;
+            --lm-radius:   10px;
+            --lm-font:     'DM Sans', system-ui, sans-serif;
+            --lm-mono:     'DM Mono', 'Cascadia Code', monospace;
+        }
+
+        /* ── FAB ── */
+        #lm-fab{
+            position:fixed;bottom:28px;right:28px;z-index:99990;
+            width:52px;height:52px;border-radius:14px;
+            background:linear-gradient(145deg,#0d2218,#112a1e);
+            border:1.5px solid #1e5a38;color:var(--lm-green);font-size:22px;
+            cursor:pointer;box-shadow:0 8px 32px rgba(0,0,0,.8),0 0 0 1px rgba(78,201,176,.08);
+            display:flex;align-items:center;justify-content:center;
+            transition:all .2s cubic-bezier(.34,1.56,.64,1);font-family:var(--lm-font);
+        }
+        #lm-fab:hover{transform:scale(1.08) translateY(-2px);border-color:var(--lm-green);box-shadow:0 12px 40px rgba(78,201,176,.22);}
+        #lm-fab.open{border-color:var(--lm-green);}
+        #lm-fab-dot{position:absolute;top:-4px;right:-4px;width:12px;height:12px;border-radius:50%;background:var(--lm-amber);border:2px solid var(--lm-bg);display:none;animation:lm-pulse 2s infinite;}
+        #lm-fab-dot.on{display:block;}
+        @keyframes lm-pulse{0%,100%{box-shadow:0 0 0 0 rgba(215,186,125,.4);}50%{box-shadow:0 0 0 5px rgba(215,186,125,0);}}
+
+        /* ── PANEL ── */
+        #lm-panel{
+            position:fixed;bottom:100px;right:28px;
+            width:1020px;max-width:calc(100vw - 56px);
+            height:700px;max-height:calc(100vh - 130px);
+            background:var(--lm-bg);
+            border:1px solid var(--lm-border);
+            border-radius:16px;
+            box-shadow:0 32px 120px rgba(0,0,0,.95),0 0 0 1px rgba(255,255,255,.03);
+            display:none;flex-direction:column;overflow:hidden;z-index:99991;
+            font-family:var(--lm-font);color:var(--lm-text);resize:both;
+        }
+        #lm-panel.open{display:flex;}
+
+        /* ── HEADER ── */
+        #lm-top{
+            display:flex;align-items:center;gap:14px;padding:14px 20px;
+            background:var(--lm-bg2);border-bottom:1px solid var(--lm-border);
+            flex-shrink:0;cursor:move;user-select:none;
+        }
+        #lm-top-icon{
+            width:36px;height:36px;border-radius:10px;
+            background:var(--lm-green-bg);border:1px solid #1e5a38;
+            display:flex;align-items:center;justify-content:center;font-size:17px;flex-shrink:0;
+        }
+        #lm-top h2{margin:0;font-size:14px;font-weight:700;color:#f5f5f5;letter-spacing:-.2px;}
+        #lm-top-sub{font-size:11px;color:var(--lm-text3);margin-top:1px;font-weight:400;}
+        #lm-top-r{margin-left:auto;display:flex;align-items:center;gap:8px;}
+        .lm-kbd{font-size:10px;color:#2a2a2a;background:var(--lm-bg);border:1px solid var(--lm-border);padding:2px 7px;border-radius:5px;font-family:var(--lm-mono);}
+        #lm-close{background:transparent;border:none;color:var(--lm-text3);cursor:pointer;font-size:16px;padding:5px 9px;border-radius:7px;line-height:1;transition:all .15s;}
+        #lm-close:hover{color:#f5f5f5;background:var(--lm-border2);}
+
+        /* ── PROGRESS ── */
+        #lm-prog-bar{
+            padding:8px 20px;background:var(--lm-bg);
+            border-bottom:1px solid var(--lm-border);
+            display:flex;align-items:center;gap:14px;flex-shrink:0;
+        }
+        #lm-prog-track{flex:1;height:3px;background:var(--lm-border);border-radius:2px;overflow:hidden;}
+        #lm-prog-fill{height:100%;background:linear-gradient(90deg,var(--lm-green2),var(--lm-green));border-radius:2px;transition:width .5s cubic-bezier(.4,0,.2,1);width:0%;}
+        #lm-prog-lbl{font-size:11px;color:var(--lm-text3);white-space:nowrap;font-variant-numeric:tabular-nums;}
+
+        /* ── BODY ── */
+        #lm-body{display:flex;flex:1;overflow:hidden;}
+
+        /* ── SIDEBAR ── */
+        #lm-sidebar{
+            width:220px;flex-shrink:0;
+            background:var(--lm-bg2);
+            border-right:1px solid var(--lm-border);
+            display:flex;flex-direction:column;overflow:hidden;
+        }
+        #lm-sb-top{padding:12px;border-bottom:1px solid var(--lm-border);display:flex;flex-direction:column;gap:8px;}
+        #lm-sb-search{
+            background:var(--lm-bg);border:1px solid var(--lm-border);color:var(--lm-text);
+            padding:8px 12px;border-radius:8px;outline:none;font-size:12.5px;
+            width:100%;box-sizing:border-box;font-family:var(--lm-font);transition:.2s;
+        }
+        #lm-sb-search:focus{border-color:#2d6a4a;background:var(--lm-bg3);}
+        #lm-sb-search::placeholder{color:var(--lm-text3);}
+        #lm-btn-new{
+            width:100%;background:linear-gradient(135deg,var(--lm-green-bg),#112a1e);
+            border:1px solid #1e5a38;color:var(--lm-green);padding:9px 12px;border-radius:8px;
+            cursor:pointer;font-size:12.5px;font-weight:600;font-family:var(--lm-font);
+            transition:all .15s;display:flex;align-items:center;justify-content:center;gap:6px;
+        }
+        #lm-btn-new:hover{border-color:var(--lm-green);background:linear-gradient(135deg,#112a1e,#163320);}
+        #lm-btn-dashboard{
+            width:100%;background:transparent;border:1px solid var(--lm-border);
+            color:var(--lm-text3);padding:7px 12px;border-radius:8px;cursor:pointer;
+            font-size:12px;font-weight:500;font-family:var(--lm-font);transition:all .15s;
+            display:flex;align-items:center;justify-content:center;gap:6px;
+        }
+        #lm-btn-dashboard:hover{border-color:#79b8ff;color:var(--lm-blue);}
+        #lm-btn-dashboard.act{background:var(--lm-blue-bg);border-color:var(--lm-blue);color:var(--lm-blue);}
+
+        /* ── A-Z LIST ── */
+        #lm-az-list{flex:1;overflow-y:auto;padding:4px 0 8px;}
+        #lm-az-list::-webkit-scrollbar{width:3px;}
+        #lm-az-list::-webkit-scrollbar-thumb{background:var(--lm-border2);border-radius:2px;}
+        .lm-az-letter{
+            padding:8px 14px 4px;font-size:10px;font-weight:700;
+            color:var(--lm-text3);text-transform:uppercase;letter-spacing:1.5px;
+            display:flex;align-items:center;gap:8px;
+        }
+        .lm-az-letter::after{content:'';flex:1;height:1px;background:var(--lm-border);}
+        .lm-case-row{
+            padding:9px 14px 9px 16px;cursor:pointer;
+            display:flex;align-items:flex-start;gap:9px;
+            border-left:3px solid transparent;transition:all .12s;
+            position:relative;
+        }
+        .lm-case-row:hover{background:var(--lm-bg3);}
+        .lm-case-row.sel{background:#0f2019;border-left-color:var(--lm-green);}
+        .lm-case-row.active-mark .lm-cr-name::after{content:'📌';font-size:9px;margin-left:5px;vertical-align:middle;}
+        .lm-cr-dot{width:6px;height:6px;border-radius:50%;background:var(--lm-amber);flex-shrink:0;margin-top:5px;}
+        .lm-cr-name{font-size:12.5px;color:#b8b8b8;flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;line-height:1.4;}
+        .lm-case-row.sel .lm-cr-name{color:#eee;font-weight:600;}
+        .lm-cr-sub{font-size:10px;color:var(--lm-text3);margin-top:2px;}
+        .lm-cr-time{font-size:10px;color:var(--lm-text3);flex-shrink:0;margin-top:3px;}
+        .lm-cr-prazo-badge{
+            position:absolute;top:50%;right:8px;transform:translateY(-50%);
+            font-size:9.5px;padding:1px 6px;border-radius:4px;font-weight:600;white-space:nowrap;
+        }
+        .lm-cr-prazo-badge.urgente{background:#3a1010;color:#f47c7c;border:1px solid #5a2020;}
+        .lm-cr-prazo-badge.proximo{background:#2a2010;color:var(--lm-amber);border:1px solid #4a3820;}
+
+        /* ── MAIN ── */
+        #lm-main{flex:1;display:flex;flex-direction:column;overflow:hidden;min-width:0;}
+
+        /* ── TABS ── */
+        #lm-tabs-wrapper{
+            display:flex;align-items:stretch;background:var(--lm-bg3);
+            border-bottom:1px solid var(--lm-border);flex-shrink:0;min-height:44px;position:relative;
+        }
+        #lm-tabs-arrow-l,#lm-tabs-arrow-r{
+            flex-shrink:0;width:28px;background:var(--lm-bg3);border:none;cursor:pointer;
+            color:var(--lm-text3);font-size:12px;display:flex;align-items:center;justify-content:center;
+            transition:all .15s;z-index:2;padding:0;
+        }
+        #lm-tabs-arrow-l{border-right:1px solid var(--lm-border);}
+        #lm-tabs-arrow-r{border-left:1px solid var(--lm-border);}
+        #lm-tabs-arrow-l:hover,#lm-tabs-arrow-r:hover{background:var(--lm-bg2);color:#c8c8c8;}
+        #lm-tabs-arrow-l.hidden,#lm-tabs-arrow-r.hidden{opacity:0;pointer-events:none;}
+        #lm-tabs{
+            display:flex;flex:1;overflow-x:auto;overflow-y:hidden;
+            scroll-behavior:smooth;min-height:44px;
+            -ms-overflow-style:none;scrollbar-width:none;
+        }
+        #lm-tabs::-webkit-scrollbar{display:none;}
+        #lm-tabs-wrapper::before,#lm-tabs-wrapper::after{
+            content:'';position:absolute;top:0;bottom:1px;width:24px;pointer-events:none;z-index:1;
+        }
+        #lm-tabs-wrapper::before{left:28px;background:linear-gradient(to right,var(--lm-bg3),transparent);}
+        #lm-tabs-wrapper::after{right:28px;background:linear-gradient(to left,var(--lm-bg3),transparent);}
+        #lm-tabs-wrapper.no-overflow::before,#lm-tabs-wrapper.no-overflow::after{display:none;}
+
+        .lm-tab{
+            padding:0 15px;cursor:pointer;display:flex;align-items:center;gap:6px;
+            border-bottom:2px solid transparent;font-size:12.5px;color:var(--lm-text2);
+            white-space:nowrap;transition:all .15s;min-height:44px;margin-bottom:-1px;
+            flex-shrink:0;font-weight:400;
+        }
+        .lm-tab:hover{color:#c8c8c8;background:rgba(255,255,255,.03);}
+        .lm-tab.act{color:#f0f0f0;font-weight:600;}
+        .lm-tab-ct{
+            font-size:10px;background:var(--lm-border);
+            padding:1px 6px;border-radius:8px;color:var(--lm-text3);
+            font-family:var(--lm-mono);font-weight:400;
+        }
+        .lm-tab.act .lm-tab-ct{background:rgba(78,201,176,.12);color:var(--lm-green);}
+
+        #lm-tab-add{color:#1a4a6a;font-size:12.5px;padding:0 14px;gap:5px;border-left:1px solid var(--lm-border);font-weight:500;}
+        #lm-tab-add:hover{color:var(--lm-blue);}
+
+        /* ── CONTENT ── */
+        #lm-content{flex:1;overflow-y:auto;padding:20px 24px;}
+        #lm-content::-webkit-scrollbar{width:4px;}
+        #lm-content::-webkit-scrollbar-thumb{background:var(--lm-border2);border-radius:2px;}
+
+        .lm-placeholder{display:flex;flex-direction:column;align-items:center;justify-content:center;height:100%;color:var(--lm-text3);gap:14px;text-align:center;}
+        .lm-placeholder span{font-size:42px;}
+        .lm-placeholder p{font-size:13.5px;color:#484848;line-height:1.8;}
+
+        /* ── SECTION LABEL ── */
+        .lm-sec-label{
+            font-size:10px;text-transform:uppercase;letter-spacing:1px;
+            color:var(--lm-text3);margin-bottom:14px;margin-top:4px;
+            display:flex;align-items:center;gap:10px;font-weight:600;
+        }
+        .lm-sec-label::after{content:'';flex:1;height:1px;background:var(--lm-border);}
+
+        /* ── CASE NAME ── */
+        .lm-name-wrap{margin-bottom:20px;}
+        .lm-name-lbl{font-size:11.5px;color:var(--lm-text2);font-weight:600;margin-bottom:7px;display:flex;align-items:center;gap:6px;}
+        .lm-name-req{color:var(--lm-green);font-size:8px;}
+        .lm-inp-name{
+            background:var(--lm-bg2);border:1.5px solid var(--lm-border2);
+            color:#f5f5f5;padding:11px 15px;border-radius:10px;outline:none;
+            font-size:15px;font-weight:600;width:100%;box-sizing:border-box;
+            font-family:var(--lm-font);transition:all .2s;
+        }
+        .lm-inp-name:focus{border-color:#2d6a4a;background:var(--lm-bg3);box-shadow:0 0 0 3px rgba(78,201,176,.08);}
+        .lm-inp-name::placeholder{color:var(--lm-text3);font-weight:400;font-size:13px;}
+
+        /* ── FIELD GROUPS ── */
+        .lm-field-group{
+            background:var(--lm-bg2);border:1px solid var(--lm-border);
+            border-radius:12px;padding:16px 18px;margin-bottom:16px;
+        }
+        .lm-field-group-title{
+            font-size:10.5px;font-weight:700;text-transform:uppercase;letter-spacing:.8px;
+            color:var(--lm-text3);margin-bottom:14px;display:flex;align-items:center;gap:8px;
+        }
+        .lm-field-group-title::after{content:'';flex:1;height:1px;background:var(--lm-border);}
+        .lm-g4{display:grid;grid-template-columns:2fr 1fr 1.2fr 1.2fr;gap:14px;}
+        .lm-g3{display:grid;grid-template-columns:1fr 1fr 1fr;gap:14px;}
+        .lm-g2{display:grid;grid-template-columns:1fr 1fr;gap:14px;}
+
+        /* ── FIELD ── */
+        .lm-fld{display:flex;flex-direction:column;gap:5px;position:relative;}
+        .lm-fld.full{grid-column:1/-1;}
+        .lm-fld-lbl{
+            font-size:11px;color:var(--lm-text2);font-weight:500;
+            display:flex;align-items:center;gap:4px;
+        }
+        .lm-fld-filled-dot{
+            width:5px;height:5px;border-radius:50%;background:var(--lm-green);
+            opacity:0;transition:opacity .2s;flex-shrink:0;
+        }
+        .lm-inp{
+            background:var(--lm-bg);border:1.5px solid var(--lm-border);
+            color:#e8e8e8;padding:8px 12px;border-radius:8px;outline:none;
+            font-size:13px;width:100%;box-sizing:border-box;font-family:var(--lm-font);
+            transition:all .2s;
+        }
+        .lm-inp:focus{border-color:#2d6a4a;background:var(--lm-bg3);box-shadow:0 0 0 3px rgba(78,201,176,.07);}
+        .lm-inp.filled{border-color:#1e4a30;background:#0f1e15;}
+        .lm-inp.filled + .lm-fld-filled-dot,.lm-fld:has(.lm-inp.filled) .lm-fld-filled-dot{opacity:1;}
+        .lm-inp::placeholder{color:#2e2e2e;font-size:12px;}
+        .lm-fld-acts{position:absolute;top:-2px;right:0;display:flex;gap:2px;opacity:0;transition:opacity .12s;z-index:2;}
+        .lm-fld:hover .lm-fld-acts{opacity:1;}
+        .lm-fld-btn{background:var(--lm-bg);border:1px solid var(--lm-border);color:var(--lm-text3);cursor:pointer;font-size:9px;padding:1px 5px;border-radius:3px;line-height:1.8;}
+        .lm-fld-btn:hover{background:var(--lm-bg3);color:#ccc;}
+        .lm-fld-btn.del:hover{color:var(--lm-red);background:#2a1010;}
+
+        /* ── AREA CARDS (Global view) ── */
+        .lm-area-card{
+            border:1px solid var(--lm-border);border-radius:12px;
+            margin-bottom:12px;overflow:hidden;transition:border-color .15s;
+        }
+        .lm-area-card:hover{border-color:var(--lm-border2);}
+        .lm-acard-hdr{
+            padding:12px 16px;cursor:pointer;
+            display:flex;align-items:center;gap:10px;
+            background:var(--lm-bg2);user-select:none;transition:background .12s;
+        }
+        .lm-acard-hdr:hover{background:var(--lm-bg3);}
+        .lm-acard-hdr.open{background:var(--lm-bg3);}
+        .lm-acard-icon{font-size:17px;flex-shrink:0;}
+        .lm-acard-name{font-size:13px;color:#c8c8c8;font-weight:600;flex:1;}
+        .lm-acard-prog{display:flex;align-items:center;gap:8px;}
+        .lm-acard-pct{font-size:11px;color:var(--lm-text3);min-width:36px;text-align:right;font-family:var(--lm-mono);}
+        .lm-acard-bar{width:70px;height:3px;background:var(--lm-border);border-radius:2px;overflow:hidden;}
+        .lm-acard-bar-fill{height:100%;border-radius:2px;transition:width .4s;}
+        .lm-acard-chev{font-size:10px;color:var(--lm-text3);transition:transform .2s;flex-shrink:0;}
+        .lm-acard-hdr.open .lm-acard-chev{transform:rotate(90deg);}
+        .lm-acard-go{
+            background:transparent;border:1px solid var(--lm-border);
+            color:var(--lm-text3);font-size:10.5px;padding:3px 10px;
+            border-radius:6px;cursor:pointer;transition:all .12s;flex-shrink:0;
+            font-family:var(--lm-font);
+        }
+        .lm-acard-go:hover{border-color:var(--lm-blue);color:var(--lm-blue);}
+        .lm-acard-body{padding:14px 16px;background:var(--lm-bg);border-top:1px solid var(--lm-border);display:none;}
+        .lm-acard-body.open{display:block;}
+
+        /* ── AREA VIEW ── */
+        .lm-area-top{display:flex;align-items:center;gap:12px;margin-bottom:20px;padding-bottom:16px;border-bottom:1px solid var(--lm-border);}
+        .lm-area-top-icon{font-size:24px;}
+        .lm-area-top-name{font-size:17px;font-weight:700;color:#f5f5f5;flex:1;letter-spacing:-.3px;}
+        .lm-area-top-btns{display:flex;gap:6px;}
+
+        /* ── SECTION ── */
+        .lm-sec{margin-bottom:22px;}
+        .lm-sec-hdr{display:flex;align-items:center;gap:8px;margin-bottom:12px;}
+        .lm-sec-title{font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.8px;color:#666;flex:1;}
+        .lm-sec-acts{display:flex;gap:3px;opacity:0;transition:opacity .12s;}
+        .lm-sec:hover .lm-sec-acts{opacity:1;}
+        .lm-sec-btn{background:transparent;border:none;cursor:pointer;font-size:11px;color:var(--lm-text3);padding:2px 6px;border-radius:4px;transition:all .12s;font-family:var(--lm-font);}
+        .lm-sec-btn:hover{background:var(--lm-border);color:#aaa;}
+        .lm-sec-btn.del:hover{color:var(--lm-red);background:#2a1010;}
+        .lm-fgrid{display:grid;grid-template-columns:1fr 1fr;gap:14px;}
+        .lm-add-fld{
+            border:1px dashed var(--lm-border);width:100%;border-radius:8px;
+            padding:8px;font-size:12px;color:var(--lm-text3);background:transparent;
+            cursor:pointer;transition:all .15s;font-family:var(--lm-font);margin-top:2px;
+        }
+        .lm-add-fld:hover{border-color:var(--lm-blue);color:var(--lm-blue);}
+        .lm-add-sec{
+            background:transparent;border:1px dashed var(--lm-border);
+            color:var(--lm-text3);padding:9px 16px;border-radius:8px;cursor:pointer;
+            font-size:12.5px;width:100%;font-family:var(--lm-font);transition:all .15s;margin-top:8px;
+        }
+        .lm-add-sec:hover{border-color:var(--lm-blue);color:var(--lm-blue);}
+
+        /* ── FICHA VIVA ── */
+        #lm-ficha{padding:12px 20px;border-top:1px solid var(--lm-border);flex-shrink:0;background:var(--lm-bg2);}
+        .lm-ficha-hdr{display:flex;align-items:center;gap:10px;margin-bottom:8px;}
+        .lm-ficha-title{font-size:11.5px;font-weight:700;color:var(--lm-blue);text-transform:uppercase;letter-spacing:.5px;}
+        .lm-ficha-hint{font-size:10.5px;color:var(--lm-text3);margin-right:auto;}
+        .lm-ficha-btn{
+            background:transparent;border:1px solid var(--lm-border);color:var(--lm-text3);
+            cursor:pointer;font-size:11px;padding:3px 9px;border-radius:5px;
+            transition:all .12s;font-family:var(--lm-font);
+        }
+        .lm-ficha-btn:hover{border-color:var(--lm-blue);color:var(--lm-blue);}
+        #lm-ficha-ta{
+            width:100%;background:var(--lm-bg);border:1.5px solid var(--lm-border);
+            color:#c8c8c8;padding:10px 13px;border-radius:9px;outline:none;
+            font-family:var(--lm-mono);font-size:11.5px;line-height:1.7;
+            resize:vertical;box-sizing:border-box;min-height:72px;max-height:180px;transition:border .2s;
+        }
+        #lm-ficha-ta:focus{border-color:#1a4a7a;}
+        #lm-ficha-ta::placeholder{color:var(--lm-text3);}
+        #lm-wc{font-size:10px;color:var(--lm-text3);margin-top:4px;}
+        .lm-ficha-pulse{border-color:#2a5a8a !important;background:var(--lm-blue-bg) !important;}
+
+        /* ── FOOTER ── */
+        #lm-footer{
+            padding:10px 18px;border-top:1px solid var(--lm-border);
+            display:flex;gap:6px;align-items:center;flex-shrink:0;
+            background:var(--lm-bg);flex-wrap:wrap;
+        }
+        #lm-footer-status{flex:1;font-size:11.5px;color:var(--lm-text3);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+        #lm-footer-status strong{color:var(--lm-green);}
+
+        /* ── BUTTONS ── */
+        .lm-btn{border:none;cursor:pointer;font-size:12px;padding:7px 14px;border-radius:8px;font-family:var(--lm-font);transition:all .15s;white-space:nowrap;font-weight:500;}
+        .lm-btn-ghost{background:transparent;border:1px solid var(--lm-border);color:var(--lm-text2);}
+        .lm-btn-ghost:hover{border-color:var(--lm-border2);color:#d0d0d0;background:var(--lm-bg3);}
+        .lm-btn-save{background:#1a2a0e;border:1px solid #3a6a18;color:#90cc50;}
+        .lm-btn-save:hover{background:#203414;border-color:#70b030;}
+        .lm-btn-close-case{background:#261c0e;border:1px solid #4a3418;color:#c08040;}
+        .lm-btn-close-case:hover{background:#302010;border-color:#c08040;}
+        .lm-btn-danger{background:#261010;border:1px solid #4a1c1c;color:#c06060;}
+        .lm-btn-danger:hover{border-color:var(--lm-red);color:var(--lm-red);}
+        .lm-btn-primary{background:linear-gradient(135deg,#0a2e18,#0c3c1e);border:1px solid #246040;color:var(--lm-green);font-weight:600;}
+        .lm-btn-primary:hover{background:linear-gradient(135deg,#0c3c1e,#0e4c26);border-color:var(--lm-green);box-shadow:0 2px 14px rgba(78,201,176,.18);}
+        .lm-btn-import{background:var(--lm-blue-bg);border:1px solid #1e3a5a;color:var(--lm-blue);}
+        .lm-btn-import:hover{border-color:var(--lm-blue);}
+        .lm-btn-master{background:linear-gradient(135deg,#180d32,#220c42);border:1px solid #4a2480;color:var(--lm-purple);font-weight:600;}
+        .lm-btn-master:hover{border-color:var(--lm-purple);box-shadow:0 2px 14px rgba(197,134,192,.15);}
+        .lm-btn-inject{background:linear-gradient(135deg,#1a1a0a,#2a2a0e);border:1px solid #4a4a18;color:var(--lm-amber);}
+        .lm-btn-inject:hover{border-color:var(--lm-amber);}
+
+        /* ── OVERLAY / MODAL ── */
+        .lm-ov{position:fixed;inset:0;background:rgba(0,0,0,.75);z-index:100020;display:flex;align-items:center;justify-content:center;backdrop-filter:blur(2px);}
+        .lm-modal{
+            background:#181818;border:1px solid #353535;border-radius:16px;
+            padding:24px 28px;min-width:380px;max-width:720px;width:94vw;
+            max-height:90vh;overflow-y:auto;
+            box-shadow:0 32px 100px rgba(0,0,0,.95);
+            display:flex;flex-direction:column;gap:16px;
+        }
+        .lm-modal::-webkit-scrollbar{width:4px;}
+        .lm-modal::-webkit-scrollbar-thumb{background:var(--lm-border2);border-radius:2px;}
+        .lm-modal h3{margin:0;font-size:15px;font-weight:700;color:#f5f5f5;letter-spacing:-.2px;}
+        .lm-modal p{margin:0;font-size:12.5px;color:var(--lm-text2);line-height:1.7;}
+        .lm-modal label{font-size:12px;color:var(--lm-text2);display:block;margin-bottom:5px;font-weight:500;}
+        .lm-modal-acts{display:flex;gap:8px;justify-content:flex-end;}
+        .lm-mstep{background:var(--lm-bg3);border:1px solid var(--lm-border);border-radius:10px;padding:16px 18px;display:flex;flex-direction:column;gap:12px;}
+        .lm-mstep-num{font-size:10px;text-transform:uppercase;letter-spacing:.8px;color:#3a6a5a;font-weight:700;}
+        .lm-divider{height:1px;background:var(--lm-border);}
+        .lm-prompt-ta{min-height:240px;background:#0e0e0e !important;border-color:var(--lm-border) !important;font-family:var(--lm-mono) !important;font-size:11px !important;color:#a8a8a8 !important;line-height:1.6 !important;resize:vertical;}
+        .lm-paste-ta{min-height:130px;background:#0e0e0e !important;border-color:var(--lm-border) !important;font-family:var(--lm-mono) !important;font-size:11px !important;color:#a8a8a8 !important;line-height:1.6 !important;resize:vertical;}
+        .lm-tabs-mini{display:flex;border-bottom:1px solid var(--lm-border);margin-bottom:12px;gap:0;}
+        .lm-tab-mini{padding:7px 14px;cursor:pointer;font-size:12px;color:var(--lm-text3);border-bottom:2px solid transparent;transition:all .12s;}
+        .lm-tab-mini:hover{color:#aaa;}
+        .lm-tab-mini.act{color:var(--lm-blue);border-bottom-color:var(--lm-blue);font-weight:600;}
+
+        /* ── INLINE PROMPT ── */
+        .lm-iprompt-ov{position:fixed;inset:0;background:rgba(0,0,0,.65);z-index:100030;display:flex;align-items:center;justify-content:center;backdrop-filter:blur(2px);}
+        .lm-iprompt-box{background:#1c1c1c;border:1px solid var(--lm-border2);border-radius:12px;padding:20px 22px;min-width:320px;max-width:420px;box-shadow:0 20px 70px rgba(0,0,0,.9);display:flex;flex-direction:column;gap:12px;}
+        .lm-iprompt-lbl{font-size:13px;color:#c8c8c8;font-weight:500;}
+        .lm-iprompt-acts{display:flex;gap:8px;justify-content:flex-end;}
+
+        /* ── TOAST ── */
+        #lm-toast{
+            position:fixed;bottom:100px;right:96px;z-index:100000;
+            background:#172e1f;border:1px solid #246040;color:var(--lm-green);
+            font-size:13px;font-family:var(--lm-font);padding:9px 18px;
+            border-radius:10px;box-shadow:0 8px 32px rgba(0,0,0,.8);
+            opacity:0;transform:translateY(10px);transition:all .25s;pointer-events:none;
+        }
+        #lm-toast.show{opacity:1;transform:translateY(0);}
+        #lm-toast.warn{background:#261e0e;border-color:#6a4018;color:var(--lm-amber);}
+        #lm-toast.error{background:#261010;border-color:#6a1818;color:var(--lm-red);}
+
+        /* ── HIGHLIGHT ── */
+        mark.lm-hl{background:#0a2e18;color:var(--lm-green);border-radius:2px;padding:0 1px;}
+
+        /* ── TOPBAR ── */
+        #lm-topbar{
+            position:fixed;top:0;left:0;right:0;z-index:99995;height:36px;
+            background:linear-gradient(90deg,#0a1c10,#08160c,#0a1c10);
+            border-bottom:1px solid #183a22;display:none;align-items:center;
+            padding:0 16px;gap:0;font-family:var(--lm-font);
+            box-shadow:0 2px 18px rgba(0,0,0,.75);
+        }
+        #lm-topbar.on{display:flex;}
+        #lm-tb-pin{font-size:14px;flex-shrink:0;margin-right:10px;}
+        #lm-tb-badge{
+            font-size:9px;font-weight:700;text-transform:uppercase;letter-spacing:1px;
+            color:#2ea870;background:#0a2014;border:1px solid #1a5030;
+            padding:2px 8px;border-radius:3px;flex-shrink:0;margin-right:12px;
+        }
+        #lm-tb-name{font-size:13px;font-weight:700;color:#e8e8e8;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:280px;}
+        #lm-tb-sep{color:#1e3a22;margin:0 10px;flex-shrink:0;}
+        #lm-tb-cpf{font-size:11.5px;color:#4a8a5a;font-family:var(--lm-mono);white-space:nowrap;flex-shrink:0;}
+        #lm-tb-sep2{color:#1e3a22;margin:0 10px;flex-shrink:0;}
+        #lm-tb-tipo{font-size:11px;color:#3a7a6a;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:320px;font-style:italic;}
+        #lm-tb-right{margin-left:auto;display:flex;align-items:center;gap:8px;flex-shrink:0;}
+        #lm-tb-open{
+            background:transparent;border:1px solid #1a4028;color:var(--lm-green);
+            font-size:11px;padding:3px 11px;border-radius:5px;cursor:pointer;
+            font-family:var(--lm-font);transition:all .15s;
+        }
+        #lm-tb-open:hover{border-color:var(--lm-green);}
+        #lm-tb-inject{
+            background:linear-gradient(135deg,#1c1c0a,#282808);border:1px solid #3a3a14;
+            color:var(--lm-amber);font-size:10.5px;font-weight:600;
+            padding:3px 10px;border-radius:5px;cursor:pointer;font-family:var(--lm-font);transition:all .15s;
+        }
+        #lm-tb-inject:hover{border-color:var(--lm-amber);}
+        #lm-tb-master{
+            background:linear-gradient(135deg,#180d32,#220c42);border:1px solid #4a2480;
+            color:var(--lm-purple);font-size:10.5px;font-weight:700;
+            padding:3px 10px;border-radius:5px;cursor:pointer;font-family:var(--lm-font);transition:all .15s;
+        }
+        #lm-tb-master:hover{border-color:var(--lm-purple);}
+        #lm-tb-close{background:transparent;border:none;color:#1e4028;font-size:16px;cursor:pointer;padding:2px 6px;border-radius:4px;line-height:1;transition:all .15s;}
+        #lm-tb-close:hover{color:var(--lm-red);}
+
+        /* ── FEED BUTTON ── */
+        #lm-feed-btn{
+            position:fixed;z-index:99994;
+            background:linear-gradient(135deg,#0a2e18,#0c3a1e);
+            border:1.5px solid #246040;color:var(--lm-green);
+            font-size:12.5px;font-weight:700;font-family:var(--lm-font);
+            padding:7px 14px;border-radius:20px;cursor:pointer;
+            box-shadow:0 4px 22px rgba(0,0,0,.85);
+            display:none;align-items:center;gap:6px;white-space:nowrap;
+            transition:opacity .2s,transform .15s;pointer-events:auto;
+        }
+        #lm-feed-btn:hover{border-color:var(--lm-green);transform:scale(1.04);}
+        #lm-feed-btn.visible{display:flex;}
+
+        /* ── MASTER MODAL ── */
+        #lm-master-modal{position:fixed;inset:0;background:rgba(0,0,0,.85);z-index:100025;display:none;align-items:center;justify-content:center;backdrop-filter:blur(3px);}
+        #lm-master-modal.on{display:flex;}
+        #lm-master-box{
+            background:#161624;border:1px solid #3a2870;border-radius:16px;
+            padding:24px 28px;width:740px;max-width:calc(100vw - 40px);
+            max-height:90vh;display:flex;flex-direction:column;gap:14px;
+            box-shadow:0 32px 100px rgba(0,0,0,.95);
+        }
+        #lm-master-box h3{margin:0;font-size:15px;font-weight:700;color:#f5f5f5;display:flex;align-items:center;gap:10px;}
+        #lm-master-ta{
+            flex:1;min-height:320px;max-height:50vh;
+            background:#0e0e1a;border:1.5px solid #2e1e58;color:#c8c8d8;
+            padding:12px 14px;border-radius:10px;outline:none;font-family:var(--lm-mono);
+            font-size:11.5px;line-height:1.65;resize:vertical;box-sizing:border-box;
+        }
+        #lm-master-ta:focus{border-color:#6a38b0;}
+        #lm-master-acts{display:flex;gap:8px;align-items:center;}
+        #lm-master-copied{font-size:12px;color:var(--lm-green);opacity:0;transition:opacity .3s;margin-right:auto;}
+        #lm-master-copied.on{opacity:1;}
+
+        /* ── INJECT MODAL ── */
+        #lm-inject-modal{position:fixed;inset:0;background:rgba(0,0,0,.8);z-index:100026;display:none;align-items:center;justify-content:center;backdrop-filter:blur(3px);}
+        #lm-inject-modal.on{display:flex;}
+        #lm-inject-box{
+            background:#161610;border:1px solid #3a3a14;border-radius:16px;
+            padding:24px 28px;width:620px;max-width:calc(100vw - 40px);
+            max-height:90vh;display:flex;flex-direction:column;gap:14px;
+            box-shadow:0 32px 100px rgba(0,0,0,.95);
+        }
+        #lm-inject-box h3{margin:0;font-size:15px;font-weight:700;color:#f5f5f5;display:flex;align-items:center;gap:10px;}
+        #lm-inject-ta{
+            min-height:160px;max-height:40vh;
+            background:#0e0e08;border:1.5px solid #2e2e10;color:#c8c8a8;
+            padding:12px 14px;border-radius:10px;outline:none;font-family:var(--lm-mono);
+            font-size:11.5px;line-height:1.7;resize:vertical;box-sizing:border-box;
+        }
+        #lm-inject-ta:focus{border-color:#6a6a20;}
+        .lm-inject-platform-badge{
+            display:flex;align-items:center;gap:8px;padding:10px 14px;
+            background:#1a1a0e;border:1px solid #2e2e18;border-radius:8px;
+        }
+        .lm-inject-plat-name{font-size:13px;font-weight:600;color:var(--lm-amber);}
+        .lm-inject-plat-status{font-size:11px;color:var(--lm-text2);margin-right:auto;}
+        .lm-inject-tip{font-size:11.5px;color:var(--lm-text2);line-height:1.6;padding:10px 14px;background:var(--lm-bg3);border-radius:8px;border:1px solid var(--lm-border);}
+
+        /* ── DASHBOARD ── */
+        #lm-dashboard{flex:1;overflow-y:auto;padding:20px 24px;display:none;}
+        #lm-dashboard::-webkit-scrollbar{width:4px;}
+        #lm-dashboard::-webkit-scrollbar-thumb{background:var(--lm-border2);border-radius:2px;}
+        #lm-dashboard.on{display:block;}
+        .lm-dash-header{display:flex;align-items:center;gap:16px;margin-bottom:20px;}
+        .lm-dash-title{font-size:17px;font-weight:700;color:#f5f5f5;flex:1;letter-spacing:-.3px;}
+        .lm-dash-stats{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:22px;}
+        .lm-stat-card{
+            background:var(--lm-bg2);border:1px solid var(--lm-border);
+            border-radius:12px;padding:14px 16px;
+        }
+        .lm-stat-num{font-size:26px;font-weight:700;color:#f5f5f5;line-height:1;font-family:var(--lm-mono);}
+        .lm-stat-lbl{font-size:10.5px;color:var(--lm-text2);margin-top:5px;text-transform:uppercase;letter-spacing:.6px;}
+        .lm-dash-filter{display:flex;gap:6px;margin-bottom:14px;flex-wrap:wrap;}
+        .lm-dash-filter-btn{
+            padding:5px 12px;border-radius:20px;font-size:11.5px;cursor:pointer;
+            border:1px solid var(--lm-border);background:transparent;color:var(--lm-text2);
+            font-family:var(--lm-font);transition:all .15s;
+        }
+        .lm-dash-filter-btn:hover,.lm-dash-filter-btn.act{border-color:var(--lm-green);color:var(--lm-green);background:rgba(78,201,176,.08);}
+        .lm-dash-cases{display:flex;flex-direction:column;gap:10px;}
+        .lm-dash-case-card{
+            background:var(--lm-bg2);border:1px solid var(--lm-border);
+            border-radius:12px;padding:14px 16px;cursor:pointer;
+            display:flex;align-items:center;gap:14px;transition:all .15s;
+        }
+        .lm-dash-case-card:hover{border-color:var(--lm-border2);background:var(--lm-bg3);}
+        .lm-dash-case-card.active{border-color:var(--lm-green);background:#0a1c10;}
+        .lm-dash-case-icon{font-size:22px;flex-shrink:0;}
+        .lm-dash-case-info{flex:1;min-width:0;}
+        .lm-dash-case-name{font-size:13.5px;font-weight:600;color:#e0e0e0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+        .lm-dash-case-meta{font-size:11px;color:var(--lm-text3);margin-top:3px;}
+        .lm-dash-case-areas{display:flex;gap:4px;margin-top:6px;flex-wrap:wrap;}
+        .lm-dash-area-tag{font-size:9.5px;padding:2px 8px;border-radius:10px;background:var(--lm-border);color:var(--lm-text2);border:1px solid transparent;}
+        .lm-dash-case-prog{display:flex;align-items:center;gap:8px;flex-shrink:0;}
+        .lm-dash-prog-ring{position:relative;width:44px;height:44px;flex-shrink:0;}
+        .lm-dash-prog-ring svg{transform:rotate(-90deg);}
+        .lm-dash-prog-ring circle{fill:none;stroke-width:3;}
+        .lm-dash-prog-ring .bg{stroke:#252525;}
+        .lm-dash-prog-ring .fg{stroke:var(--lm-green);stroke-linecap:round;transition:stroke-dashoffset .4s;}
+        .lm-dash-prog-pct{
+            position:absolute;inset:0;display:flex;align-items:center;justify-content:center;
+            font-size:10px;font-weight:700;color:var(--lm-text);font-family:var(--lm-mono);
+        }
+        .lm-dash-prazo{display:flex;flex-direction:column;align-items:flex-end;gap:4px;flex-shrink:0;min-width:90px;}
+        .lm-prazo-label{font-size:9.5px;text-transform:uppercase;letter-spacing:.6px;color:var(--lm-text3);font-weight:700;}
+        .lm-prazo-date{font-size:11.5px;font-family:var(--lm-mono);color:var(--lm-text2);}
+        .lm-prazo-urgente{color:var(--lm-red) !important;}
+        .lm-prazo-proximo{color:var(--lm-amber) !important;}
+        .lm-dash-empty{text-align:center;padding:40px;color:var(--lm-text3);}
+
+        /* ── TIMELINE PANEL ── */
+        .lm-timeline{display:flex;flex-direction:column;gap:0;}
+        .lm-tl-item{display:flex;gap:12px;padding:8px 0;border-left:2px solid var(--lm-border);margin-left:8px;padding-left:16px;position:relative;}
+        .lm-tl-item::before{content:'';position:absolute;left:-5px;top:14px;width:8px;height:8px;border-radius:50%;background:var(--lm-border2);border:2px solid var(--lm-bg);}
+        .lm-tl-item.important::before{background:var(--lm-green);}
+        .lm-tl-item:last-child{border-left-color:transparent;}
+        .lm-tl-icon{font-size:13px;flex-shrink:0;margin-top:1px;}
+        .lm-tl-content{flex:1;min-width:0;}
+        .lm-tl-action{font-size:12.5px;color:#d0d0d0;font-weight:500;}
+        .lm-tl-detail{font-size:11px;color:var(--lm-text3);margin-top:2px;white-space:pre-wrap;word-break:break-word;}
+        .lm-tl-time{font-size:10px;color:var(--lm-text3);flex-shrink:0;font-family:var(--lm-mono);margin-top:2px;}
+
+        /* ── ADD AREA MODAL ── */
+        .lm-addarea-ctx{background:#162018;border:1px solid #1e4a28;border-radius:10px;padding:12px 16px;display:flex;align-items:center;gap:12px;}
+        .lm-addarea-ctx-icon{font-size:22px;flex-shrink:0;}
+        .lm-addarea-ctx-name{font-size:13px;font-weight:700;color:#d8d8d8;}
+        .lm-addarea-ctx-sub{font-size:11px;color:#3a6a4a;margin-top:2px;}
+        .lm-addarea-areas{display:flex;gap:4px;margin-top:6px;flex-wrap:wrap;}
+        .lm-addarea-area-badge{font-size:10px;background:#152018;border:1px solid #1e3a28;color:#4a7a5a;padding:2px 8px;border-radius:10px;}
+
+        /* ── PRAZO FIELD ── */
+        .lm-prazo-row{display:flex;align-items:center;gap:10px;padding:10px 14px;background:var(--lm-bg2);border:1px solid var(--lm-border);border-radius:9px;margin-bottom:14px;}
+        .lm-prazo-row label{font-size:11.5px;color:var(--lm-text2);font-weight:500;white-space:nowrap;}
+        .lm-prazo-inp{background:var(--lm-bg);border:1px solid var(--lm-border);color:var(--lm-text);padding:6px 10px;border-radius:7px;font-size:12.5px;font-family:var(--lm-mono);outline:none;transition:.2s;}
+        .lm-prazo-inp:focus{border-color:#3a6a4a;}
+        .lm-prazo-days{font-size:11.5px;font-weight:600;padding:4px 10px;border-radius:20px;}
+        .lm-prazo-days.urgente{background:#2a1010;color:var(--lm-red);border:1px solid #4a1818;}
+        .lm-prazo-days.proximo{background:#261e0a;color:var(--lm-amber);border:1px solid #4a380e;}
+        .lm-prazo-days.ok{background:#0e2018;color:var(--lm-green);border:1px solid #1a4028;}
+        .lm-status-sel{background:var(--lm-bg);border:1px solid var(--lm-border);color:var(--lm-text);padding:6px 10px;border-radius:7px;font-size:12px;font-family:var(--lm-font);outline:none;margin-left:auto;}
+    `);
+
+    function promptInline(labelText, def, cb) {
+        const ov=document.createElement('div'); ov.className='lm-iprompt-ov';
+        ov.innerHTML=`<div class="lm-iprompt-box"><label class="lm-iprompt-lbl">${escH(labelText)}</label><input class="lm-inp" type="text" value="${escH(def||'')}"><div class="lm-iprompt-acts"><button class="lm-btn lm-btn-ghost" id="ip-c">Cancelar</button><button class="lm-btn lm-btn-primary" id="ip-ok">OK</button></div></div>`;
+        document.body.appendChild(ov);
+        const inp=ov.querySelector('input'); inp.focus(); inp.select();
+        const ok=()=>{ const v=inp.value.trim(); ov.remove(); if(v) cb(v); };
+        ov.querySelector('#ip-ok').onclick=ok; ov.querySelector('#ip-c').onclick=()=>ov.remove();
+        inp.onkeydown=(e)=>{ if(e.key==='Enter') ok(); if(e.key==='Escape') ov.remove(); };
+    }
+
+    function toast(msg, type='ok', ms=2800) {
+        let el=document.getElementById('lm-toast');
+        if(!el){ el=document.createElement('div'); el.id='lm-toast'; document.body.appendChild(el); }
+        el.textContent=msg; el.className=`show ${type}`; clearTimeout(el._t);
+        el._t=setTimeout(()=>{ el.className=''; }, ms);
+    }
+
+    function getSortName(c){ return (c.fields?.['Nome do Cliente']||c.name||'').trim(); }
+    function getAreaIcons(c){ return (c.schema?.areas||[]).map(a=>a.icon||'').join(' ').trim(); }
+
+    // ─── PRAZO ────────────────────────────────────────────────────────────────
+    function getPrazoDays(prazoStr){
+        if(!prazoStr) return null;
+        const [d,m,a]=prazoStr.split('/').map(Number);
+        if(!d||!m||!a) return null;
+        const target=new Date(a,m-1,d);
+        const diff=Math.ceil((target-Date.now())/(1000*60*60*24));
+        return diff;
+    }
+    function prazoClass(days){ if(days===null) return ''; if(days<=3) return 'urgente'; if(days<=10) return 'proximo'; return 'ok'; }
+
+    function renderSidebar() {
+        const list=document.getElementById('lm-az-list'); if(!list) return;
+        const q=sidebarQ.toLowerCase();
+        let items=wallet.slice();
+        if(q) items=items.filter(c=>getSortName(c).toLowerCase().includes(q)||(c.name||'').toLowerCase().includes(q));
+        items.sort((a,b)=>getSortName(a).localeCompare(getSortName(b),'pt-BR',{sensitivity:'base'}));
+        if(!items.length){
+            list.innerHTML=`<div style="padding:24px 12px;text-align:center;color:var(--lm-text3);font-size:13px;">${q?'Nenhum resultado.':'<span style="font-size:30px;display:block;margin-bottom:8px;">📁</span>Nenhum caso salvo.<br><span style="color:var(--lm-green);font-size:12px;">Clique em + Novo Caso</span>'}</div>`;
+            return;
+        }
+        const groups={};
+        items.forEach(c=>{ const sn=getSortName(c); const l=sn?sn[0].toUpperCase():'#'; if(!groups[l]) groups[l]=[]; groups[l].push(c); });
+        let html='';
+        Object.keys(groups).sort().forEach(letter=>{
+            html+=`<div class="lm-az-letter">${letter}</div>`;
+            groups[letter].forEach(c=>{
+                const isSel=editing?.id===c.id, isAct=activeCase?.id===c.id;
+                const dn=getSortName(c)||c.name||'Sem nome';
+                const icons=getAreaIcons(c);
+                const days=getPrazoDays(c.prazo);
+                const pc=prazoClass(days);
+                let prazoHtml='';
+                if(pc==='urgente') prazoHtml=`<span class="lm-cr-prazo-badge urgente">⚠ ${days}d</span>`;
+                else if(pc==='proximo') prazoHtml=`<span class="lm-cr-prazo-badge proximo">${days}d</span>`;
+                html+=`<div class="lm-case-row ${isSel?'sel':''} ${isAct?'active-mark':''}" data-cid="${c.id}">
+                    ${isAct?'<span class="lm-cr-dot" title="Caso ativo"></span>':''}
+                    <div style="flex:1;min-width:0;">
+                        <div class="lm-cr-name" title="${escH(dn)}">${escH(dn)}</div>
+                        ${icons?`<div class="lm-cr-sub">${escH(icons)}</div>`:''}
+                    </div>
+                    <div class="lm-cr-time">${timeAgo(c.ts)}</div>
+                    ${prazoHtml}
+                </div>`;
+            });
+        });
+        list.innerHTML=html;
+        list.querySelectorAll('.lm-case-row[data-cid]').forEach(el=>{
+            el.onclick=()=>{ const c=wallet.find(x=>x.id===el.dataset.cid); if(c){ activeDashboard=false; document.getElementById('lm-dashboard')?.classList.remove('on'); document.getElementById('lm-content')?.style.setProperty('display',''); loadEditing(c); } };
+        });
+    }
+
+    function loadEditing(c) {
+        editing=deep(c); activeTab='global'; globalSecOpen={};
+        renderAll();
+    }
+
+    function renderAll(){
+        renderSidebar(); renderTabsBar(); renderContent(); renderFicha(); renderFooterStatus(); updateProgress();
+    }
+
+    // ─── TABS ─────────────────────────────────────────────────────────────────
+    function renderTabsBar() {
+        const wrapper=document.getElementById('lm-tabs-wrapper'); if(!wrapper) return;
+        if(!editing){ wrapper.innerHTML=''; return; }
+
+        const f=editing.fields, areas=editing.schema?.areas||[];
+        const gFilled=GLOBAL_FIELDS.filter(gf=>f[gf.id]).length;
+
+        let tabsHtml=`<div class="lm-tab ${activeTab==='global'?'act':''}" data-tab="global" style="${activeTab==='global'?'border-bottom-color:var(--lm-green);':''}">
+            <span>🗂</span> Global <span class="lm-tab-ct">${gFilled}/${GLOBAL_FIELDS.length}</span></div>`;
+
+        // Timeline tab
+        const tlCount=(editing.timeline||[]).length;
+        tabsHtml+=`<div class="lm-tab ${activeTab==='_timeline'?'act':''}" data-tab="_timeline" style="${activeTab==='_timeline'?'border-bottom-color:var(--lm-amber);':''}">
+            ⏱ Timeline <span class="lm-tab-ct">${tlCount}</span></div>`;
+
+        areas.forEach(area=>{
+            const tot=area.sections.reduce((n,s)=>n+s.fields.length,0);
+            const fil=area.sections.reduce((n,s)=>n+s.fields.filter(fld=>!!f[fld.id]).length,0);
+            const isA=activeTab===area.id;
+            tabsHtml+=`<div class="lm-tab ${isA?'act':''}" data-tab="${area.id}" style="${isA?`border-bottom-color:${area.color};`:''}">
+                <span>${area.icon}</span> ${escH(area.label)}
+                <span class="lm-tab-ct" style="${isA?`color:${area.color};`:''}">${fil}/${tot}</span></div>`;
+        });
+        tabsHtml+=`<div class="lm-tab" id="lm-tab-add" title="Adicionar nova área a este caso">＋ Área</div>`;
+
+        wrapper.innerHTML=`
+            <button id="lm-tabs-arrow-l">◀</button>
+            <div id="lm-tabs">${tabsHtml}</div>
+            <button id="lm-tabs-arrow-r">▶</button>`;
+
+        const tabs=wrapper.querySelector('#lm-tabs');
+        const arrowL=wrapper.querySelector('#lm-tabs-arrow-l');
+        const arrowR=wrapper.querySelector('#lm-tabs-arrow-r');
+
+        function updateArrows(){
+            const hasOverflow=tabs.scrollWidth>tabs.clientWidth+4;
+            wrapper.classList.toggle('no-overflow',!hasOverflow);
+            arrowL.classList.toggle('hidden',tabs.scrollLeft<=4);
+            arrowR.classList.toggle('hidden',tabs.scrollLeft>=tabs.scrollWidth-tabs.clientWidth-4);
+        }
+        arrowL.onclick=()=>{ tabs.scrollBy({left:-160,behavior:'smooth'}); };
+        arrowR.onclick=()=>{ tabs.scrollBy({left:160,behavior:'smooth'}); };
+        tabs.addEventListener('scroll',updateArrows,{passive:true});
+        setTimeout(updateArrows,60);
+        new ResizeObserver(updateArrows).observe(tabs);
+
+        tabs.querySelectorAll('.lm-tab[data-tab]').forEach(t=>{
+            t.onclick=()=>{ collectFields(); activeTab=t.dataset.tab; renderTabsBar(); renderContent(); };
+        });
+        tabs.querySelector('#lm-tab-add')?.addEventListener('click',()=>openAddAreaModal());
+    }
+
+    function renderContent(){
+        const col=document.getElementById('lm-content'); if(!col) return;
+        if(!editing){ col.innerHTML=`<div class="lm-placeholder"><span>👈</span><p>Selecione um caso na barra lateral<br>ou crie um novo clicando em<br><strong style="color:var(--lm-green);">+ Novo Caso</strong>.</p></div>`; return; }
+        if(activeTab==='global') renderGlobal(col);
+        else if(activeTab==='_timeline') renderTimeline(col);
+        else renderArea(col);
+    }
+
+    // ─── GLOBAL ───────────────────────────────────────────────────────────────
+    function renderGlobal(col){
+        const f=editing.fields, areas=editing.schema?.areas||[];
+        const days=getPrazoDays(editing.prazo);
+        const pc=prazoClass(days);
+        const daysLabel = days!==null ? `<span class="lm-prazo-days ${pc}">${days>0?days+'d restantes':days===0?'HOJE!':Math.abs(days)+'d em atraso'}</span>` : '';
+
+        let html=`<div class="lm-name-wrap">
+            <div class="lm-name-lbl">Identificação do Caso <span class="lm-name-req">●</span></div>
+            <input type="text" class="lm-inp-name" id="lm-case-name" placeholder="Ex: João Silva — Aposentadoria Especial" value="${escH(editing.name||'')}">
+        </div>
+
+        <div class="lm-prazo-row">
+            <label>📅 Prazo / Audiência</label>
+            <input type="text" class="lm-prazo-inp" id="lm-prazo-inp" placeholder="DD/MM/AAAA" value="${escH(editing.prazo||'')}">
+            ${daysLabel}
+            <select class="lm-status-sel" id="lm-status-sel">
+                <option value="ativo" ${editing.status==='ativo'?'selected':''}>🟢 Ativo</option>
+                <option value="aguardando" ${editing.status==='aguardando'?'selected':''}>🟡 Aguardando</option>
+                <option value="encerrado" ${editing.status==='encerrado'?'selected':''}>⚫ Encerrado</option>
+                <option value="urgente" ${editing.status==='urgente'?'selected':''}>🔴 Urgente</option>
+            </select>
+        </div>
+
+        <div class="lm-field-group">
+            <div class="lm-field-group-title">👤 Dados do Cliente</div>
+            <div class="lm-g4">
+                ${gfv(f,'Nome do Cliente','Nome do Cliente','Nome completo')}
+                ${gfv(f,'CPF','CPF','000.000.000-00')}
+                ${gfv(f,'NB/Processo','NB / Processo','Nº benefício ou processo')}
+                ${gfv(f,'Processo','Processo CNJ','0000000-00.0000.0.00.0000')}
+            </div>
+        </div>
+
+        <div class="lm-field-group">
+            <div class="lm-field-group-title">⚖️ Dados Processuais</div>
+            <div class="lm-g3">
+                ${gfv(f,'Vara/Comarca','Vara / Comarca','Ex: 3ª Vara Cível de SP')}
+                ${gfv(f,'Cidade','Cidade','Cidade')}
+                ${gfv(f,'Advogado','Advogado Responsável','Dr. Nome — OAB/UF 000.000')}
+            </div>
+        </div>`;
+
+        if(areas.length){
+            html+=`<div class="lm-sec-label" style="margin-top:6px;">Áreas do caso — clique para expandir</div>`;
+            areas.forEach(area=>{
+                const tot=area.sections.reduce((n,s)=>n+s.fields.length,0);
+                const fil=area.sections.reduce((n,s)=>n+s.fields.filter(fld=>!!f[fld.id]).length,0);
+                const pct=tot>0?Math.round(fil/tot*100):0, isOpen=!!globalSecOpen[area.id];
+                let inlineHtml='';
+                if(isOpen){
+                    inlineHtml=`<div style="padding-top:4px;">
+                    ${area.sections.map(sec=>`
+                        <div style="margin-bottom:14px;">
+                            <div style="font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.8px;color:${area.color}99;margin-bottom:10px;">${escH(sec.label)}</div>
+                            <div class="lm-fgrid">${sec.fields.map(fld=>gfv(f,fld.id,fld.label,fld.placeholder||'')).join('')}
+                            </div>
+                        </div>`).join('')}
+                    </div>`;
+                }
+                html+=`<div class="lm-area-card" style="${isOpen?`border-color:${area.color}40;`:''}">
+                    <div class="lm-acard-hdr ${isOpen?'open':''}" data-toggle="${area.id}">
+                        <span class="lm-acard-icon">${area.icon}</span>
+                        <span class="lm-acard-name">${escH(area.label)}</span>
+                        <div class="lm-acard-prog">
+                            <span class="lm-acard-pct">${fil}/${tot}</span>
+                            <div class="lm-acard-bar"><div class="lm-acard-bar-fill" style="width:${pct}%;background:${area.color};"></div></div>
+                        </div>
+                        <button class="lm-acard-go" data-goto="${area.id}">→ Abrir aba</button>
+                        <span class="lm-acard-chev">▶</span>
+                    </div>
+                    <div class="lm-acard-body ${isOpen?'open':''}">${inlineHtml}</div>
+                </div>`;
+            });
+        } else {
+            html+=`<div style="margin-top:16px;padding:24px;border:1px dashed var(--lm-border);border-radius:12px;text-align:center;color:var(--lm-text3);font-size:13px;line-height:1.8;">
+                Neste caso ainda não há áreas de campos.<br>
+                <span style="font-size:12px;color:#1e4a6a;">Use <strong style="color:var(--lm-blue);">Importar JSON</strong> para adicionar campos gerados pela IA.</span>
+            </div>`;
+        }
+        col.innerHTML=html;
+
+        col.querySelector('#lm-case-name')?.addEventListener('input',(e)=>{ if(editing) editing.name=e.target.value; });
+        col.querySelector('#lm-prazo-inp')?.addEventListener('change',(e)=>{
+            if(editing){ editing.prazo=e.target.value.trim(); addTimeline(editing,'📅 Prazo definido',e.target.value.trim()); flushToWallet(); renderGlobal(col); }
+        });
+        col.querySelector('#lm-status-sel')?.addEventListener('change',(e)=>{
+            if(editing){ editing.status=e.target.value; addTimeline(editing,'🔄 Status alterado',e.target.value); flushToWallet(); }
+        });
+        col.querySelectorAll('[data-toggle]').forEach(hdr=>{
+            hdr.addEventListener('click',(e)=>{
+                if(e.target.closest('[data-goto]')) return;
+                collectFields(); const id=hdr.dataset.toggle;
+                globalSecOpen[id]=!globalSecOpen[id]; renderContent();
+            });
+        });
+        col.querySelectorAll('[data-goto]').forEach(btn=>{
+            btn.addEventListener('click',(e)=>{ e.stopPropagation(); collectFields(); activeTab=btn.dataset.goto; renderTabsBar(); renderContent(); });
+        });
+        bindInputs(col);
+    }
+
+    // Campo com visual melhorado
+    function gfv(f,id,label,ph){
+        const filled=!!f[id];
+        return `<div class="lm-fld">
+            <div class="lm-fld-lbl"><span class="lm-fld-filled-dot" ${filled?'style="opacity:1"':''}></span>${escH(label)}</div>
+            <input class="lm-inp ${filled?'filled':''}" type="text" data-field="${escH(id)}" placeholder="${escH(ph)}" value="${escH(f[id]||'')}">
+        </div>`;
+    }
+
+    // ─── TIMELINE VIEW ────────────────────────────────────────────────────────
+    function renderTimeline(col){
+        const tl=(editing.timeline||[]);
+        if(!tl.length){
+            col.innerHTML=`<div class="lm-placeholder"><span>⏱</span><p>Nenhum evento registrado ainda.<br><span style="font-size:12px;color:var(--lm-text3);">Ações como salvar, ativar, adicionar prazo, capturar texto<br>serão registradas automaticamente aqui.</span></p></div>`;
+            return;
+        }
+        const importantActions=['📌 Caso ativado','📥 Schema importado','📅 Prazo definido','⚠ Caso encerrado'];
+        let html=`<div style="display:flex;align-items:center;gap:12px;margin-bottom:18px;">
+            <div style="font-size:16px;font-weight:700;color:#f5f5f5;flex:1;">⏱ Timeline do Caso</div>
+            <div style="font-size:11.5px;color:var(--lm-text3);">${tl.length} evento${tl.length!==1?'s':''}</div>
+            <button class="lm-btn lm-btn-ghost" id="tl-clear" style="font-size:11px;padding:5px 10px;">🗑 Limpar</button>
+            <button class="lm-btn lm-btn-import" id="tl-export" style="font-size:11px;padding:5px 10px;">📤 Exportar</button>
+        </div>
+        <div class="lm-timeline">`;
+        tl.forEach(ev=>{
+            const isImp=importantActions.some(a=>ev.action.includes(a.replace(/^[^\s]+ /,'')));
+            html+=`<div class="lm-tl-item ${isImp?'important':''}">
+                <div class="lm-tl-content">
+                    <div class="lm-tl-action">${escH(ev.action)}</div>
+                    ${ev.detail?`<div class="lm-tl-detail">${escH(ev.detail)}</div>`:''}
+                </div>
+                <div class="lm-tl-time">${fmtDate(ev.ts)}</div>
+            </div>`;
+        });
+        html+='</div>';
+        col.innerHTML=html;
+        col.querySelector('#tl-clear')?.addEventListener('click',()=>{
+            if(!confirm('Limpar toda a timeline deste caso?')) return;
+            editing.timeline=[]; flushToWallet(); renderTimeline(col);
+            toast('Timeline limpa.','warn');
+        });
+        col.querySelector('#tl-export')?.addEventListener('click',()=>{
+            const txt=tl.map(ev=>`[${fmtDate(ev.ts)}] ${ev.action}${ev.detail?'\n  '+ev.detail:''}`).join('\n\n');
+            navigator.clipboard.writeText(txt).then(()=>toast('📤 Timeline copiada!'));
+        });
+    }
+
+    // ─── AREA VIEW ────────────────────────────────────────────────────────────
+    function renderArea(col){
+        const area=editing.schema?.areas.find(a=>a.id===activeTab);
+        if(!area){ col.innerHTML=''; return; }
+        const f=editing.fields;
+        let html=`<div class="lm-area-top">
+            <span class="lm-area-top-icon">${area.icon}</span>
+            <span class="lm-area-top-name">${escH(area.label)}</span>
+            <div class="lm-area-top-btns">
+                <button class="lm-btn lm-btn-ghost" id="btn-cp" style="font-size:11.5px;padding:6px 11px;">📋 Copiar</button>
+                <button class="lm-btn lm-btn-ghost" id="btn-clr" style="font-size:11.5px;padding:6px 11px;color:#b06050;">🗑 Limpar</button>
+                <button class="lm-btn lm-btn-ghost" id="btn-del-area" style="font-size:11.5px;padding:6px 11px;color:#906050;" title="Remover área">✕ Área</button>
+            </div>
+        </div>`;
+        if(!area.sections.length){
+            html+=`<div style="padding:20px;text-align:center;color:var(--lm-text3);font-size:13px;">Nenhuma seção. <button class="lm-add-sec" id="add-first-sec">＋ Criar Seção</button></div>`;
+        } else {
+            html+=area.sections.map(sec=>`
+                <div class="lm-sec" data-sec="${sec.id}">
+                    <div class="lm-sec-hdr">
+                        <div class="lm-sec-title" style="color:${area.color}aa;">${escH(sec.label)}</div>
+                        <div class="lm-sec-acts">
+                            <button class="lm-sec-btn" data-ren="${sec.id}">✎</button>
+                            <button class="lm-sec-btn del" data-del-sec="${sec.id}">✕</button>
+                        </div>
+                    </div>
+                    <div class="lm-fgrid">
+                        ${sec.fields.map(fld=>gfv(f,fld.id,fld.label,fld.placeholder||'')).join('')}
+                        <div class="lm-fld" style="align-self:flex-end;"><button class="lm-add-fld" data-add-fld="${sec.id}">＋ Campo</button></div>
+                    </div>
+                </div>`).join('');
+            html+=`<button class="lm-add-sec" id="add-sec-btn">＋ Nova Seção em "${escH(area.label)}"</button>`;
+        }
+        col.innerHTML=html;
+        col.querySelector('#btn-cp')?.addEventListener('click',()=>{
+            const lines=[];
+            col.querySelectorAll('[data-field]').forEach(inp=>{ if(inp.value.trim()){ const l=inp.closest('.lm-fld')?.querySelector('.lm-fld-lbl')?.textContent?.trim()||inp.dataset.field; lines.push(`${l}: ${inp.value.trim()}`); } });
+            if(!lines.length){ toast('Nenhum campo preenchido nesta área.','warn'); return; }
+            navigator.clipboard.writeText(lines.join('\n')).then(()=>toast('📋 Campos copiados!'));
+        });
+        col.querySelector('#btn-clr')?.addEventListener('click',()=>{
+            if(!confirm(`Limpar todos os campos de "${area.label}"?`)) return;
+            col.querySelectorAll('[data-field]').forEach(inp=>{ inp.value=''; inp.classList.remove('filled'); delete editing.fields[inp.dataset.field]; });
+            updateProgress(); renderTabsBar();
+        });
+        col.querySelector('#btn-del-area')?.addEventListener('click',()=>{
+            if(!confirm(`Remover a área "${area.label}" deste caso?`)) return;
+            editing.schema.areas=editing.schema.areas.filter(a=>a.id!==area.id);
+            addTimeline(editing,`🗑 Área removida`,area.label);
+            activeTab='global'; renderTabsBar(); renderContent();
+            toast(`🗑 Área "${area.label}" removida.`,'warn');
+        });
+        col.querySelectorAll('[data-ren]').forEach(btn=>{ btn.onclick=(e)=>{ e.stopPropagation(); const sec=area.sections.find(s=>s.id===btn.dataset.ren); if(!sec) return; promptInline('Novo nome da seção:',sec.label,name=>{ sec.label=name; renderArea(col); renderTabsBar(); }); }; });
+        col.querySelectorAll('[data-del-sec]').forEach(btn=>{ btn.onclick=(e)=>{ e.stopPropagation(); const sec=area.sections.find(s=>s.id===btn.dataset.delSec); if(!sec||!confirm(`Excluir seção "${sec.label}"?`)) return; area.sections=area.sections.filter(s=>s.id!==sec.id); renderArea(col); renderTabsBar(); }; });
+        col.querySelectorAll('[data-add-fld]').forEach(btn=>{ btn.onclick=()=>{ const sec=area.sections.find(s=>s.id===btn.dataset.addFld); if(!sec) return; promptInline('Label do novo campo:','',label=>{ sec.fields.push({id:label.replace(/\s+/g,'_'),label,placeholder:''}); renderArea(col); renderTabsBar(); toast(`Campo "${label}" adicionado!`); }); }; });
+        col.querySelectorAll('[data-del-fld]').forEach(btn=>{ btn.onclick=(e)=>{ e.stopPropagation(); const sec=area.sections.find(s=>s.id===btn.dataset.fldSec); const fld=sec?.fields.find(f=>f.id===btn.dataset.delFld); if(!fld||!confirm(`Remover campo "${fld.label}"?`)) return; sec.fields=sec.fields.filter(f=>f.id!==fld.id); renderArea(col); renderTabsBar(); }; });
+        const addSecBtn=col.querySelector('#add-sec-btn')||col.querySelector('#add-first-sec');
+        addSecBtn?.addEventListener('click',()=>{ promptInline('Nome da nova seção:','',name=>{ area.sections.push({id:'sec_'+genId(),label:name,fields:[]}); renderArea(col); renderTabsBar(); toast(`Seção "${name}" criada!`); }); });
+        bindInputs(col);
+    }
+
+    function bindInputs(col){
+        col.querySelectorAll('.lm-inp[data-field]').forEach(inp=>{
+            inp.addEventListener('input',()=>{
+                inp.classList.toggle('filled',inp.value.trim().length>0);
+                // atualiza dot
+                const dot=inp.closest('.lm-fld')?.querySelector('.lm-fld-filled-dot');
+                if(dot) dot.style.opacity=inp.value.trim()?'1':'0';
+                if(editing){ if(inp.value.trim()) editing.fields[inp.dataset.field]=inp.value.trim(); else delete editing.fields[inp.dataset.field]; }
+                updateProgress(); renderTabsBar();
+            });
+        });
+    }
+
+    function collectFields(){
+        const col=document.getElementById('lm-content'); if(!col||!editing) return;
+        col.querySelectorAll('.lm-inp[data-field]').forEach(inp=>{
+            if(inp.value.trim()) editing.fields[inp.dataset.field]=inp.value.trim(); else delete editing.fields[inp.dataset.field];
+        });
+        const ni=col.querySelector('#lm-case-name'); if(ni) editing.name=ni.value.trim();
+        const pi=col.querySelector('#lm-prazo-inp'); if(pi) editing.prazo=pi.value.trim();
+        const si=col.querySelector('#lm-status-sel'); if(si) editing.status=si.value;
+        const ft=document.getElementById('lm-ficha-ta'); if(ft) editing.fichaViva=ft.value;
+    }
+
+    function renderFicha(){
+        const ta=document.getElementById('lm-ficha-ta'), wc=document.getElementById('lm-wc'); if(!ta) return;
+        ta.value=editing?.fichaViva||''; if(wc) wc.textContent=wCount(ta.value);
+    }
+
+    function updateFichaViva(content){
+        const ta=document.getElementById('lm-ficha-ta'), wc=document.getElementById('lm-wc');
+        if(ta){
+            ta.value=content;
+            ta.classList.add('lm-ficha-pulse');
+            setTimeout(()=>ta.classList.remove('lm-ficha-pulse'),600);
+            if(wc) wc.textContent=wCount(content);
+        }
+        if(editing) editing.fichaViva=content;
+    }
+
+    function appendToFichaViva(newContent){
+        const current=(editing?.fichaViva||'').trimEnd();
+        const updated = current ? current + '\n\n' + newContent : newContent;
+        updateFichaViva(updated);
+        if(editing){ editing.fichaViva=updated; flushToWallet(); }
+        if(activeCase?.id===editing?.id){ activeCase.fichaViva=updated; saveActive(); }
+    }
+
+    function updateProgress(){
+        if(!editing) return;
+        const f=editing.fields; let tot=GLOBAL_FIELDS.length, fil=0;
+        GLOBAL_FIELDS.forEach(gf=>{ if(f[gf.id]) fil++; });
+        (editing.schema?.areas||[]).forEach(area=>{ area.sections.forEach(sec=>{ sec.fields.forEach(fld=>{ tot++; if(f[fld.id]) fil++; }); }); });
+        const pct=tot>0?Math.round(fil/tot*100):0;
+        const fill=document.getElementById('lm-prog-fill'), lbl=document.getElementById('lm-prog-lbl');
+        if(fill) fill.style.width=pct+'%';
+        if(lbl)  lbl.textContent=`${fil} de ${tot} campos · ${pct}%`;
+    }
+
+    function renderFooterStatus(){
+        const el=document.getElementById('lm-footer-status'); if(!el) return;
+        if(activeCase){ const n=activeCase.fields?.['Nome do Cliente']||activeCase.name||'—'; el.innerHTML=`📌 Caso ativo: <strong>${escH(n)}</strong>`; }
+        else el.innerHTML=`Nenhum caso ativo. Selecione e clique em <strong style="color:var(--lm-green);">📌 Ativar</strong>.`;
+    }
+
+    function flushToWallet(){
+        if(!editing) return;
+        const idx=wallet.findIndex(c=>c.id===editing.id);
+        if(idx!==-1) wallet[idx]=deep(editing); else { wallet.unshift(deep(editing)); if(wallet.length>80) wallet=wallet.slice(0,80); }
+        saveWallet();
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════
+    // NOVA FUNCIONALIDADE 1: DASHBOARD DE CARTEIRA
+    // ═══════════════════════════════════════════════════════════════════════
+    let dashFilter='todos';
+
+    function showDashboard(){
+        activeDashboard=true;
+        const content=document.getElementById('lm-content');
+        const dash=document.getElementById('lm-dashboard');
+        if(content) content.style.display='none';
+        if(dash){ dash.classList.add('on'); renderDashboardContent(); }
+        document.getElementById('lm-btn-dashboard')?.classList.add('act');
+    }
+
+    function hideDashboard(){
+        activeDashboard=false;
+        const content=document.getElementById('lm-content');
+        const dash=document.getElementById('lm-dashboard');
+        if(content) content.style.display='';
+        if(dash) dash.classList.remove('on');
+        document.getElementById('lm-btn-dashboard')?.classList.remove('act');
+    }
+
+    function calcCasePct(c){
+        const f=c.fields||{};
+        let tot=GLOBAL_FIELDS.length, fil=0;
+        GLOBAL_FIELDS.forEach(gf=>{ if(f[gf.id]) fil++; });
+        (c.schema?.areas||[]).forEach(area=>{ area.sections.forEach(sec=>{ sec.fields.forEach(fld=>{ tot++; if(f[fld.id]) fil++; }); }); });
+        return tot>0?Math.round(fil/tot*100):0;
+    }
+
+    function renderDashboardContent(){
+        const dash=document.getElementById('lm-dashboard'); if(!dash) return;
+        const total=wallet.length;
+        const ativos=wallet.filter(c=>c.status!=='encerrado').length;
+        const urgentes=wallet.filter(c=>{ const d=getPrazoDays(c.prazo); return d!==null&&d<=3; }).length;
+        const comPrazo=wallet.filter(c=>c.prazo).length;
+
+        // Filtragem
+        let items=wallet.slice();
+        if(dashFilter==='urgentes') items=items.filter(c=>{ const d=getPrazoDays(c.prazo); return d!==null&&d<=3; });
+        else if(dashFilter==='ativos') items=items.filter(c=>c.status!=='encerrado');
+        else if(dashFilter==='encerrados') items=items.filter(c=>c.status==='encerrado');
+
+        // Ordenação: urgentes primeiro
+        items.sort((a,b)=>{
+            const da=getPrazoDays(a.prazo)??9999;
+            const db=getPrazoDays(b.prazo)??9999;
+            if(da!==db) return da-db;
+            return getSortName(a).localeCompare(getSortName(b),'pt-BR');
+        });
+
+        let html=`<div class="lm-dash-header">
+            <div class="lm-dash-title">📊 Dashboard da Carteira</div>
+            <button class="lm-btn lm-btn-ghost" id="dash-close" style="font-size:11.5px;padding:6px 12px;">✕ Fechar</button>
+        </div>
+        <div class="lm-dash-stats">
+            <div class="lm-stat-card"><div class="lm-stat-num">${total}</div><div class="lm-stat-lbl">Total de Casos</div></div>
+            <div class="lm-stat-card"><div class="lm-stat-num" style="color:var(--lm-green);">${ativos}</div><div class="lm-stat-lbl">Casos Ativos</div></div>
+            <div class="lm-stat-card"><div class="lm-stat-num" style="color:var(--lm-amber);">${comPrazo}</div><div class="lm-stat-lbl">Com Prazo</div></div>
+            <div class="lm-stat-card"><div class="lm-stat-num" style="color:var(--lm-red);">${urgentes}</div><div class="lm-stat-lbl">Urgentes (≤3d)</div></div>
+        </div>
+        <div class="lm-dash-filter">
+            <button class="lm-dash-filter-btn ${dashFilter==='todos'?'act':''}" data-f="todos">Todos (${total})</button>
+            <button class="lm-dash-filter-btn ${dashFilter==='ativos'?'act':''}" data-f="ativos">Ativos (${ativos})</button>
+            <button class="lm-dash-filter-btn ${dashFilter==='urgentes'?'act':''}" data-f="urgentes" style="${dashFilter==='urgentes'?'':'border-color:#4a1818;color:var(--lm-red);background:#1a0808;'}">⚠ Urgentes (${urgentes})</button>
+            <button class="lm-dash-filter-btn ${dashFilter==='encerrados'?'act':''}" data-f="encerrados">Encerrados</button>
+        </div>
+        <div class="lm-dash-cases">`;
+
+        if(!items.length){
+            html+=`<div class="lm-dash-empty">Nenhum caso neste filtro.</div>`;
+        }
+        items.forEach(c=>{
+            const pct=calcCasePct(c);
+            const isAct=activeCase?.id===c.id;
+            const icons=getAreaIcons(c)||'📁';
+            const nome=getSortName(c)||c.name||'Sem nome';
+            const days=getPrazoDays(c.prazo);
+            const pc=prazoClass(days);
+            const circumf=44*Math.PI;
+            const dashoffset=circumf*(1-pct/100);
+            const areas=(c.schema?.areas||[]).slice(0,4);
+
+            let prazoHtml='';
+            if(c.prazo){
+                const cls=pc==='urgente'?'lm-prazo-urgente':pc==='proximo'?'lm-prazo-proximo':'';
+                prazoHtml=`<div class="lm-dash-prazo">
+                    <div class="lm-prazo-label">Prazo</div>
+                    <div class="lm-prazo-date ${cls}">${escH(c.prazo)}${days!==null?`<br><span style="font-size:10px;">${days>0?days+'d':days===0?'hoje':Math.abs(days)+'d atraso'}</span>`:''}</div>
+                </div>`;
+            }
+
+            html+=`<div class="lm-dash-case-card ${isAct?'active':''}" data-dcid="${c.id}">
+                <div class="lm-dash-case-icon">${icons.split(' ')[0]||'📁'}</div>
+                <div class="lm-dash-case-info">
+                    <div class="lm-dash-case-name">${escH(nome)}${isAct?' 📌':''}</div>
+                    <div class="lm-dash-case-meta">${c.fields?.['Processo']||c.fields?.['NB/Processo']||''} ${c.fields?.['Vara/Comarca']?'· '+c.fields['Vara/Comarca']:''}</div>
+                    <div class="lm-dash-case-areas">
+                        ${areas.map(a=>`<span class="lm-dash-area-tag" style="border-color:${a.color}44;color:${a.color};">${a.icon} ${escH(a.label)}</span>`).join('')}
+                    </div>
+                </div>
+                <div class="lm-dash-prog-ring">
+                    <svg width="44" height="44" viewBox="0 0 44 44">
+                        <circle class="bg" cx="22" cy="22" r="18" stroke-dasharray="${circumf}"/>
+                        <circle class="fg" cx="22" cy="22" r="18" stroke-dasharray="${circumf}" stroke-dashoffset="${dashoffset}" stroke="${pct>60?'var(--lm-green)':pct>30?'var(--lm-amber)':'var(--lm-text3)'}"/>
+                    </svg>
+                    <div class="lm-dash-prog-pct">${pct}%</div>
+                </div>
+                ${prazoHtml}
+            </div>`;
+        });
+        html+=`</div>`;
+        dash.innerHTML=html;
+
+        dash.querySelector('#dash-close')?.addEventListener('click',hideDashboard);
+        dash.querySelectorAll('.lm-dash-filter-btn').forEach(btn=>{
+            btn.onclick=()=>{ dashFilter=btn.dataset.f; renderDashboardContent(); };
+        });
+        dash.querySelectorAll('.lm-dash-case-card[data-dcid]').forEach(card=>{
+            card.onclick=()=>{
+                const c=wallet.find(x=>x.id===card.dataset.dcid);
+                if(c){ hideDashboard(); loadEditing(c); }
+            };
+        });
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════
+    // NOVA FUNCIONALIDADE 2: INJETOR INTELIGENTE DE CONTEXTO
+    // ═══════════════════════════════════════════════════════════════════════
+    function buildInjectModal(){
+        if(document.getElementById('lm-inject-modal')) return;
+        const el=document.createElement('div'); el.id='lm-inject-modal';
+        el.innerHTML=`<div id="lm-inject-box">
+            <h3>⚡ Injetar Contexto na IA</h3>
+            <div id="lm-inject-plat-wrap"></div>
+            <div style="font-size:11.5px;color:var(--lm-text3);margin-top:-4px;">Escolha o que injetar no campo de chat da IA:</div>
+            <div style="display:flex;flex-direction:column;gap:8px;" id="lm-inject-opts">
+                <label style="display:flex;align-items:center;gap:8px;cursor:pointer;padding:8px 12px;background:var(--lm-bg3);border-radius:8px;border:1px solid var(--lm-border);">
+                    <input type="radio" name="inj-type" value="ficha" checked style="accent-color:var(--lm-amber);">
+                    <div><div style="font-size:12.5px;color:#d0d0d0;font-weight:500;">📋 Ficha Viva do Caso</div><div style="font-size:11px;color:var(--lm-text3);">Injeta a memória acumulada — ideal para continuar análises</div></div>
+                </label>
+                <label style="display:flex;align-items:center;gap:8px;cursor:pointer;padding:8px 12px;background:var(--lm-bg3);border-radius:8px;border:1px solid var(--lm-border);">
+                    <input type="radio" name="inj-type" value="dados" style="accent-color:var(--lm-amber);">
+                    <div><div style="font-size:12.5px;color:#d0d0d0;font-weight:500;">🗂 Dados Completos do Caso</div><div style="font-size:11px;color:var(--lm-text3);">Injeta todos os campos preenchidos formatados</div></div>
+                </label>
+                <label style="display:flex;align-items:center;gap:8px;cursor:pointer;padding:8px 12px;background:var(--lm-bg3);border-radius:8px;border:1px solid var(--lm-border);">
+                    <input type="radio" name="inj-type" value="prompt" style="accent-color:var(--lm-amber);">
+                    <div><div style="font-size:12.5px;color:#d0d0d0;font-weight:500;">🧠 Prompt Mestre Completo</div><div style="font-size:11px;color:var(--lm-text3);">Injeta o prompt mestre com dados — para gerar bateria completa</div></div>
+                </label>
+                <label style="display:flex;align-items:center;gap:8px;cursor:pointer;padding:8px 12px;background:var(--lm-bg3);border-radius:8px;border:1px solid var(--lm-border);">
+                    <input type="radio" name="inj-type" value="custom" style="accent-color:var(--lm-amber);">
+                    <div><div style="font-size:12.5px;color:#d0d0d0;font-weight:500;">✏️ Texto Personalizado</div><div style="font-size:11px;color:var(--lm-text3);">Com variáveis do caso substituídas automaticamente</div></div>
+                </label>
+            </div>
+            <textarea id="lm-inject-ta" class="lm-inp" placeholder="Use {{Nome do Cliente}}, {{CPF}}, {{Ficha Viva do Caso}}... para variáveis substituídas automaticamente." style="display:none;min-height:120px;resize:vertical;font-family:var(--lm-mono);font-size:11.5px;"></textarea>
+            <div class="lm-inject-tip" id="lm-inject-preview-tip">Selecione uma opção acima para ver o que será injetado.</div>
+            <div style="display:flex;gap:8px;justify-content:flex-end;align-items:center;">
+                <button class="lm-btn lm-btn-ghost" id="inj-preview">👁 Preview</button>
+                <button class="lm-btn lm-btn-ghost" id="inj-copy">📋 Só Copiar</button>
+                <button class="lm-btn lm-btn-inject" id="inj-inject">⚡ Injetar no Chat</button>
+                <button class="lm-btn lm-btn-ghost" id="inj-close">Fechar</button>
+            </div>
+        </div>`;
+        document.body.appendChild(el);
+
+        el.querySelector('#inj-close').onclick=()=>el.classList.remove('on');
+        el.onclick=(e)=>{ if(e.target===el) el.classList.remove('on'); };
+
+        // Radio toggle
+        el.querySelectorAll('input[name="inj-type"]').forEach(r=>{
+            r.onchange=()=>{
+                el.querySelector('#lm-inject-ta').style.display=r.value==='custom'?'':'none';
+                updatePreviewTip();
+            };
+        });
+
+        function getContent(){
+            const type=el.querySelector('input[name="inj-type"]:checked')?.value||'ficha';
+            const source=activeCase||editing;
+            if(!source) return '(Nenhum caso ativo)';
+            const idx=wallet.findIndex(c=>c.id===source.id);
+            const c=idx!==-1?wallet[idx]:source;
+            if(type==='ficha') return c.fichaViva||'(Ficha Viva vazia)';
+            if(type==='dados') return buildCaseDescription(c);
+            if(type==='prompt') return MASTER_PROMPT_TEMPLATE.replace('{CASO_CONCRETO}',buildCaseDescription(c));
+            if(type==='custom'){
+                let t=el.querySelector('#lm-inject-ta').value;
+                const f=c.fields||{};
+                t=t.replace(/\{\{Ficha Viva do Caso\}\}/g,c.fichaViva||'');
+                t=t.replace(/\{\{([^}]+)\}\}/g,(_,k)=>f[k.trim()]||`{{${k}}}`);
+                return t;
+            }
+            return '';
+        }
+
+        function updatePreviewTip(){
+            const tip=el.querySelector('#lm-inject-preview-tip');
+            const type=el.querySelector('input[name="inj-type"]:checked')?.value;
+            const msgs={
+                ficha:'Será injetada a Ficha Viva do Caso no campo de chat da IA.',
+                dados:'Serão injetados todos os campos preenchidos do caso formatados.',
+                prompt:'Será injetado o Prompt Mestre completo com todos os dados.',
+                custom:'Seu texto com variáveis {{...}} substituídas pelos valores do caso.'
+            };
+            if(tip) tip.textContent=msgs[type]||'';
+        }
+
+        el.querySelector('#inj-preview').onclick=()=>{
+            const content=getContent();
+            const tip=el.querySelector('#lm-inject-preview-tip');
+            if(tip){ tip.textContent=content.slice(0,400)+(content.length>400?'...':''); }
+        };
+
+        el.querySelector('#inj-copy').onclick=()=>{
+            navigator.clipboard.writeText(getContent()).then(()=>toast('📋 Conteúdo copiado!'));
+        };
+
+        el.querySelector('#inj-inject').onclick=()=>{
+            const content=getContent();
+            const plat=detectPlatform();
+            let injected=false;
+
+            if(plat){
+                const el2=document.querySelector(plat.selector);
+                if(el2){
+                    if(plat.type==='contenteditable'){
+                        el2.focus();
+                        el2.innerHTML='';
+                        document.execCommand('insertText',false,content);
+                        if(!el2.textContent.trim()) el2.textContent=content;
+                        injected=true;
+                    } else if(plat.type==='textarea'){
+                        el2.focus();
+                        const nativeInputValueSetter=Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype,'value')?.set;
+                        if(nativeInputValueSetter) nativeInputValueSetter.call(el2,content);
+                        el2.dispatchEvent(new Event('input',{bubbles:true}));
+                        el2.dispatchEvent(new Event('change',{bubbles:true}));
+                        injected=true;
+                    }
+                }
+            }
+
+            if(injected){
+                el.classList.remove('on');
+                toast(`⚡ Injetado no ${plat?.name||'chat'}!`);
+                addTimeline(editing||activeCase?{...activeCase}:null,'⚡ Contexto injetado',plat?.name||'IA');
+            } else {
+                navigator.clipboard.writeText(content).then(()=>{
+                    toast('Não foi possível injetar direto. Conteúdo copiado — cole manualmente (Ctrl+V).','warn',4000);
+                });
+            }
+        };
+        updatePreviewTip();
+    }
+
+    function openInjectModal(){
+        const source=activeCase||editing;
+        if(!source){ toast('Nenhum caso ativo para injetar.','warn'); return; }
+        buildInjectModal();
+        const modal=document.getElementById('lm-inject-modal');
+        const plat=detectPlatform();
+        const platWrap=modal.querySelector('#lm-inject-plat-wrap');
+        if(platWrap){
+            platWrap.innerHTML=`<div class="lm-inject-platform-badge">
+                <span style="font-size:16px;">🤖</span>
+                <div class="lm-inject-plat-name">${plat?plat.name:'Plataforma desconhecida'}</div>
+                <div class="lm-inject-plat-status">${plat?'Campo de chat detectado':'Não foi possível detectar — usará clipboard'}</div>
+            </div>`;
+        }
+        modal.classList.add('on');
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════
+    // TOPBAR e FEED BUTTON (mantidos, com botão Injetar)
+    // ═══════════════════════════════════════════════════════════════════════
+    function buildTopbar(){
+        if(document.getElementById('lm-topbar')) return;
+        const bar=document.createElement('div'); bar.id='lm-topbar';
+        bar.innerHTML=`
+            <span id="lm-tb-pin">📌</span>
+            <span id="lm-tb-badge">Caso Ativo</span>
+            <span id="lm-tb-name">—</span>
+            <span id="lm-tb-sep">·</span>
+            <span id="lm-tb-cpf">—</span>
+            <span id="lm-tb-sep2">·</span>
+            <span id="lm-tb-tipo">—</span>
+            <div id="lm-tb-right">
+                <button id="lm-tb-inject">⚡ Injetar</button>
+                <button id="lm-tb-master">🧠 Mestre</button>
+                <button id="lm-tb-open">Abrir Painel</button>
+                <button id="lm-tb-close" title="Fechar caso ativo">✕</button>
+            </div>`;
+        document.body.prepend(bar);
+        bar.querySelector('#lm-tb-open').onclick=()=>showPanel();
+        bar.querySelector('#lm-tb-master').onclick=()=>doGerarPromptMestre();
+        bar.querySelector('#lm-tb-inject').onclick=()=>openInjectModal();
+        bar.querySelector('#lm-tb-close').onclick=()=>{
+            if(!confirm(`Fechar o caso ativo?\n\nOs dados foram salvos automaticamente.`)) return;
+            activeCase=null; saveActive(); updateTopbar(); updateFabDot();
+            if(editing){ renderSidebar(); renderFooterStatus(); }
+            toast('Caso fechado.','warn');
+        };
+    }
+
+    function updateTopbar(){
+        buildTopbar();
+        const bar=document.getElementById('lm-topbar'); if(!bar) return;
+        if(!activeCase?.name){ bar.classList.remove('on'); document.body.style.marginTop=''; return; }
+        const f=activeCase.fields||{};
+        document.getElementById('lm-tb-name').textContent = f['Nome do Cliente']||activeCase.name||'—';
+        document.getElementById('lm-tb-cpf').textContent  = f['CPF']?`CPF: ${f['CPF']}`:'—';
+        document.getElementById('lm-tb-tipo').textContent = f['Tipo_Acao']||f['Beneficio_Pretendido']||f['Funcao']||f['CID']||'—';
+        bar.classList.add('on');
+        document.body.style.marginTop='36px';
+    }
+
+    function buildFeedBtn(){
+        if(document.getElementById('lm-feed-btn')) return;
+        const btn=document.createElement('button'); btn.id='lm-feed-btn';
+        btn.innerHTML='📋 Alimentar Ficha';
+        document.body.appendChild(btn);
+        btn.onclick=()=>{
+            const sel=window.getSelection();
+            const text=sel?sel.toString().trim():'';
+            if(!text){ toast('Nenhum texto selecionado.','warn'); return; }
+            appendToFicha(text);
+            sel.removeAllRanges(); hideFeedBtn();
+        };
+    }
+
+    let _feedBtnTimer=null;
+    function showFeedBtn(x,y){
+        const btn=document.getElementById('lm-feed-btn'); if(!btn) return;
+        const bw=180, bh=38;
+        const left=Math.min(x+4,window.innerWidth-bw-12);
+        const top=Math.min(y+8,window.innerHeight-bh-12);
+        btn.style.left=left+'px'; btn.style.top=top+'px';
+        btn.classList.add('visible');
+    }
+    function hideFeedBtn(){ document.getElementById('lm-feed-btn')?.classList.remove('visible'); }
+
+    function appendToFicha(text){
+        if(!activeCase){ toast('Nenhum caso ativo para alimentar.','warn'); return; }
+        const idx=wallet.findIndex(c=>c.id===activeCase.id);
+        const target=idx!==-1?wallet[idx]:activeCase;
+        const d=new Date().toLocaleDateString('pt-BR');
+        const time=new Date().toLocaleTimeString('pt-BR',{hour:'2-digit',minute:'2-digit'});
+        const entry=`\n\n[${d} ${time}] — Trecho capturado:\n${text}`;
+        target.fichaViva=(target.fichaViva||'')+entry;
+        activeCase.fichaViva=target.fichaViva;
+        saveActive();
+        addTimeline(target,'📋 Texto capturado',text.slice(0,80)+(text.length>80?'...':''));
+        if(idx!==-1){ wallet[idx]=target; saveWallet(); }
+        if(editing?.id===activeCase.id){
+            editing.fichaViva=target.fichaViva;
+            editing.timeline=target.timeline;
+            const ta=document.getElementById('lm-ficha-ta');
+            const wc=document.getElementById('lm-wc');
+            if(ta){ ta.value=target.fichaViva; ta.scrollTop=ta.scrollHeight; ta.classList.add('lm-ficha-pulse'); setTimeout(()=>ta.classList.remove('lm-ficha-pulse'),600); }
+            if(wc) wc.textContent=wCount(target.fichaViva);
+        }
+        const words=text.split(/\s+/).filter(Boolean).length;
+        toast(`📋 ${words} palavra${words!==1?'s':''} adicionada${words!==1?'s':''} à Ficha Viva!`);
+    }
+
+    function initSelectionListener(){
+        document.addEventListener('mouseup',(e)=>{
+            if(e.target.closest('#lm-panel')||e.target.closest('#lm-topbar')||e.target.closest('#lm-feed-btn')) return;
+            if(!activeCase?.name){ hideFeedBtn(); return; }
+            clearTimeout(_feedBtnTimer);
+            _feedBtnTimer=setTimeout(()=>{
+                const sel=window.getSelection();
+                const text=sel?sel.toString().trim():'';
+                if(text.length>10){ showFeedBtn(e.clientX,e.clientY); }
+                else hideFeedBtn();
+            },120);
+        });
+        document.addEventListener('mousedown',(e)=>{ if(!e.target.closest('#lm-feed-btn')) hideFeedBtn(); });
+        document.addEventListener('keydown',(e)=>{ if(e.key==='Escape') hideFeedBtn(); });
+        document.addEventListener('scroll',()=>hideFeedBtn(),{passive:true});
+    }
+
+    // ─── ADD AREA MODAL ───────────────────────────────────────────────────────
+    function openAddAreaModal(){
+        if(!editing){ toast('Selecione um caso primeiro.','warn'); return; }
+        collectFields();
+
+        const nome=editing.fields?.['Nome do Cliente']||editing.name||'Caso sem nome';
+        const areasExistentes=(editing.schema?.areas||[]);
+        const areasBadges=areasExistentes.length
+            ?areasExistentes.map(a=>`<span class="lm-addarea-area-badge">${a.icon} ${escH(a.label)}</span>`).join('')
+            :'<span style="color:var(--lm-text3);font-size:11px;">Nenhuma área ainda</span>';
+
+        const ov=document.createElement('div'); ov.className='lm-ov';
+        ov.innerHTML=`<div class="lm-modal">
+            <h3>➕ Nova Área — Caso Existente</h3>
+            <p>Descreva a nova fase/necessidade do caso. A IA gerará os campos específicos.</p>
+            <div class="lm-addarea-ctx">
+                <span class="lm-addarea-ctx-icon">📁</span>
+                <div>
+                    <div class="lm-addarea-ctx-name">${escH(nome)}</div>
+                    <div class="lm-addarea-ctx-sub">Áreas já existentes:</div>
+                    <div class="lm-addarea-areas">${areasBadges}</div>
+                </div>
+            </div>
+            <div class="lm-divider"></div>
+            <div class="lm-mstep">
+                <div class="lm-mstep-num">Passo 1 — Descreva a nova fase</div>
+                <label>Nova área ou fase do processo</label>
+                <input class="lm-inp" type="text" id="aa-area" placeholder="Ex: Recurso Ordinário, Cumprimento de Sentença...">
+                <label style="margin-top:4px;">O que ocorreu e o que você precisa agora</label>
+                <textarea class="lm-inp" id="aa-desc" placeholder="Ex: A sentença foi proferida em 15/03/2024..." style="min-height:90px;resize:vertical;"></textarea>
+                <button class="lm-btn lm-btn-primary" id="aa-gen">🤖 Gerar Prompt para IA</button>
+            </div>
+            <div class="lm-divider"></div>
+            <div class="lm-mstep" id="aa-step2" style="display:none;">
+                <div class="lm-mstep-num">Passo 2 — Copie e cole na IA</div>
+                <textarea class="lm-inp lm-prompt-ta" id="aa-prompt" readonly></textarea>
+                <div style="display:flex;gap:8px;align-items:center;">
+                    <button class="lm-btn lm-btn-import" id="aa-copy">📋 Copiar Prompt</button>
+                    <span style="font-size:12px;color:var(--lm-text3);">Cole na IA → salve o JSON → importe no Passo 3.</span>
+                </div>
+            </div>
+            <div class="lm-divider"></div>
+            <div class="lm-mstep">
+                <div class="lm-mstep-num">Passo 3 — Importe o JSON</div>
+                <div class="lm-tabs-mini">
+                    <div class="lm-tab-mini act" data-aitab="file">📁 Arquivo .json</div>
+                    <div class="lm-tab-mini" data-aitab="paste">📋 Colar código</div>
+                </div>
+                <div id="aa-file-area"><button class="lm-btn lm-btn-import" id="aa-file-btn">📁 Selecionar .json</button><input type="file" id="aa-file-inp" style="display:none;" accept=".json"></div>
+                <div id="aa-paste-area" style="display:none;flex-direction:column;gap:10px;">
+                    <label>Cole o JSON da nova área aqui:</label>
+                    <textarea class="lm-inp lm-paste-ta" id="aa-paste-ta" placeholder='{"areas":[...]}'></textarea>
+                    <button class="lm-btn lm-btn-import" id="aa-paste-btn">✓ Aplicar Nova Área</button>
+                </div>
+            </div>
+            <div class="lm-divider"></div>
+            <div class="lm-modal-acts">
+                <button class="lm-btn lm-btn-ghost" id="aa-blank">📋 Criar em Branco</button>
+                <button class="lm-btn lm-btn-ghost" id="aa-close">Fechar</button>
+            </div>
+        </div>`;
+        document.body.appendChild(ov);
+
+        ov.querySelector('#aa-gen').onclick=()=>{
+            const area=ov.querySelector('#aa-area').value.trim();
+            const desc=ov.querySelector('#aa-desc').value.trim();
+            if(!area&&!desc){ toast('Informe a área ou descreva.','warn'); return; }
+            const f=editing.fields||{};
+            const ctxLines=[
+                'CONTEXTO DO CASO EXISTENTE:',
+                `Cliente: ${f['Nome do Cliente']||nome}`,
+                f['Processo']?`Processo: ${f['Processo']}`:'',
+                f['Vara/Comarca']?`Vara: ${f['Vara/Comarca']}`:'',
+                areasExistentes.length?`Áreas já existentes: ${areasExistentes.map(a=>a.label).join(', ')}`:'',
+                '',
+                'NOVA ÁREA / FASE:',
+                area?`Área: ${area}`:'',
+                desc?`Descrição:\n${desc}`:'',
+            ].filter(Boolean).join('\n');
+            const promptGerado=PROMPT_TEMPLATE.replace('{DESCRICAO}',ctxLines);
+            appendToFichaViva(`[${new Date().toLocaleDateString('pt-BR')}] Nova fase — ${area||'Nova área'}\n${desc||''}\n---`);
+            addTimeline(editing,`➕ Nova área criada`,area||'Nova área');
+            ov.querySelector('#aa-prompt').value=promptGerado;
+            const step2=ov.querySelector('#aa-step2');
+            step2.style.display='flex'; step2.style.flexDirection='column'; step2.style.gap='12px';
+            step2.scrollIntoView({behavior:'smooth',block:'nearest'});
+            toast('📋 Prompt gerado!');
+        };
+        ov.querySelector('#aa-copy').onclick=()=>{ navigator.clipboard.writeText(ov.querySelector('#aa-prompt').value).then(()=>toast('📋 Copiado!')); };
+        ov.querySelectorAll('.lm-tab-mini').forEach(t=>{ t.onclick=()=>{ ov.querySelectorAll('.lm-tab-mini').forEach(x=>x.classList.remove('act')); t.classList.add('act'); ov.querySelector('#aa-file-area').style.display=t.dataset.aitab==='file'?'':'none'; ov.querySelector('#aa-paste-area').style.display=t.dataset.aitab==='paste'?'flex':'none'; }; });
+        ov.querySelector('#aa-file-btn').onclick=()=>ov.querySelector('#aa-file-inp').click();
+        ov.querySelector('#aa-file-inp').onchange=(e)=>{ const f=e.target.files[0]; if(!f) return; const r=new FileReader(); r.onload=(ev)=>{ if(applySchema(ev.target.result)){ ov.remove(); } }; r.readAsText(f); e.target.value=''; };
+        ov.querySelector('#aa-paste-btn').onclick=()=>{ const raw=ov.querySelector('#aa-paste-ta').value.trim(); if(!raw){ toast('Cole o JSON.','warn'); return; } if(applySchema(raw)){ ov.remove(); } };
+        ov.querySelector('#aa-blank').onclick=()=>{
+            const label=ov.querySelector('#aa-area').value.trim()||'Nova Área';
+            ov.remove();
+            const ICONS=['📁','⚖️','🏛️','📜','💼','🔒','🏠','💰','👶','🧓','🚗','💡','📊','🔍'];
+            const COLS=['#4ec9b0','#ce9178','#569cd6','#d7ba7d','#c586c0','#dcdcaa','#a8cc8c','#e8965a','#4fc1ff'];
+            if(!editing.schema) editing.schema={areas:[]};
+            const na={id:'area_'+genId(),label,icon:ICONS[Math.floor(Math.random()*ICONS.length)],color:COLS[Math.floor(Math.random()*COLS.length)],sections:[]};
+            editing.schema.areas.push(na); activeTab=na.id; flushToWallet(); renderTabsBar(); renderContent();
+            toast(`Área "${label}" criada em branco!`);
+        };
+        ov.querySelector('#aa-close').onclick=()=>ov.remove();
+        ov.onclick=(e)=>{ if(e.target===ov) ov.remove(); };
+    }
+
+    // ─── PROMPT MESTRE ────────────────────────────────────────────────────────
+    function buildCaseDescription(c){
+        const f=c.fields||{};
+        const lines=[];
+        lines.push('═══════════════════════════════════════');
+        lines.push('DADOS DO CASO — '+(c.name||f['Nome do Cliente']||'Sem nome'));
+        lines.push('═══════════════════════════════════════');
+        lines.push('');
+        const globalLabels={'Nome do Cliente':'Cliente','CPF':'CPF','NB/Processo':'NB / Processo','Processo':'Processo CNJ','Vara/Comarca':'Vara / Comarca','Cidade':'Cidade','Advogado':'Advogado Responsável'};
+        const globalLines=[];
+        Object.entries(globalLabels).forEach(([id,label])=>{ if(f[id]) globalLines.push(`${label}: ${f[id]}`); });
+        if(globalLines.length){ lines.push('── IDENTIFICAÇÃO ─────────────────────'); globalLines.forEach(l=>lines.push(l)); lines.push(''); }
+        const areas=c.schema?.areas||[];
+        areas.forEach(area=>{
+            const areaLines=[];
+            area.sections.forEach(sec=>{ const sl=sec.fields.filter(fld=>f[fld.id]).map(fld=>`${fld.label}: ${f[fld.id]}`); if(sl.length){ areaLines.push(`  [ ${sec.label} ]`); sl.forEach(l=>areaLines.push('  '+l)); } });
+            if(areaLines.length){ lines.push(`── ${area.icon} ${area.label.toUpperCase()} ${'─'.repeat(Math.max(0,38-area.label.length))}`); areaLines.forEach(l=>lines.push(l)); lines.push(''); }
+        });
+        const ficha=(c.fichaViva||'').trim();
+        if(ficha){ lines.push('── FICHA VIVA DO CASO ────────────────'); lines.push(ficha); lines.push(''); }
+        lines.push('═══════════════════════════════════════');
+        return lines.join('\n');
+    }
+
+    function buildMasterModal(){
+        if(document.getElementById('lm-master-modal')) return;
+        const el=document.createElement('div'); el.id='lm-master-modal';
+        el.innerHTML=`<div id="lm-master-box">
+            <h3>🧠 Prompt Mestre — Caso Ativo</h3>
+            <div style="font-size:12px;color:var(--lm-text3);">Prompt Mestre v4.0 com dados do caso injetados. Pronto para colar na IA.</div>
+            <textarea id="lm-master-ta" readonly></textarea>
+            <div id="lm-master-acts">
+                <span id="lm-master-copied">✓ Copiado!</span>
+                <button class="lm-btn lm-btn-ghost" id="lm-master-regen">🔄 Regenerar</button>
+                <button class="lm-btn lm-btn-inject" id="lm-master-inject">⚡ Injetar no Chat</button>
+                <button class="lm-btn lm-btn-primary" id="lm-master-copy">📋 Copiar</button>
+                <button class="lm-btn lm-btn-ghost" id="lm-master-close">Fechar</button>
+            </div>
+        </div>`;
+        document.body.appendChild(el);
+        el.querySelector('#lm-master-close').onclick=()=>el.classList.remove('on');
+        el.onclick=(e)=>{ if(e.target===el) el.classList.remove('on'); };
+        el.querySelector('#lm-master-copy').onclick=()=>doCopyMaster();
+        el.querySelector('#lm-master-regen').onclick=()=>doGerarPromptMestre(false);
+        el.querySelector('#lm-master-inject').onclick=()=>{
+            const ta=document.getElementById('lm-master-ta');
+            if(!ta||!ta.value.trim()) return;
+            const plat=detectPlatform();
+            let done=false;
+            if(plat){
+                const el2=document.querySelector(plat.selector);
+                if(el2){
+                    if(plat.type==='contenteditable'){ el2.focus(); el2.innerHTML=''; document.execCommand('insertText',false,ta.value); if(!el2.textContent.trim()) el2.textContent=ta.value; done=true; }
+                    else if(plat.type==='textarea'){ el2.focus(); const s=Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype,'value')?.set; if(s) s.call(el2,ta.value); el2.dispatchEvent(new Event('input',{bubbles:true})); done=true; }
+                }
+            }
+            el.classList.remove('on');
+            if(done) toast(`⚡ Prompt Mestre injetado no ${plat?.name||'chat'}!`);
+            else { navigator.clipboard.writeText(ta.value); toast('Não foi possível injetar. Copiado para clipboard.','warn',4000); }
+        };
+    }
+
+    function doCopyMaster(){
+        const ta=document.getElementById('lm-master-ta'); if(!ta||!ta.value.trim()) return;
+        navigator.clipboard.writeText(ta.value).then(()=>{
+            const lbl=document.getElementById('lm-master-copied');
+            if(lbl){ lbl.classList.add('on'); setTimeout(()=>lbl.classList.remove('on'),2400); }
+            toast('🧠 Prompt Mestre copiado!');
+        });
+    }
+
+    function doGerarPromptMestre(autoOpen=true){
+        const source=activeCase||editing;
+        if(!source){ toast('Nenhum caso ativo.','warn'); return; }
+        if(editing&&editing.id===source.id) collectFields();
+        const idx=wallet.findIndex(c=>c.id===source.id);
+        const caseData=idx!==-1?wallet[idx]:source;
+        const desc=buildCaseDescription(caseData);
+        const prompt=MASTER_PROMPT_TEMPLATE.replace('{CASO_CONCRETO}',desc);
+        buildMasterModal();
+        const ta=document.getElementById('lm-master-ta');
+        if(ta) ta.value=prompt;
+        document.getElementById('lm-master-modal').classList.add('on');
+        addTimeline(editing||activeCase?deep(activeCase||editing):null,'🧠 Prompt Mestre gerado','');
+        navigator.clipboard.writeText(prompt).then(()=>{
+            const lbl=document.getElementById('lm-master-copied');
+            if(lbl){ lbl.classList.add('on'); setTimeout(()=>lbl.classList.remove('on'),2800); }
+            if(autoOpen) toast('🧠 Prompt Mestre gerado e copiado!');
+        }).catch(()=>{ if(autoOpen) toast('🧠 Gerado! Clique em Copiar.','warn'); });
+    }
+
+    // ─── AÇÕES FOOTER ─────────────────────────────────────────────────────────
+    function doActivate(){
+        collectFields();
+        if(!editing?.name){ toast('Informe o nome do caso.','warn'); return; }
+        editing.ts=Date.now();
+        addTimeline(editing,'📌 Caso ativado',editing.fields?.['Nome do Cliente']||editing.name);
+        activeCase=deep(editing); saveActive(); flushToWallet();
+        renderSidebar(); renderFooterStatus(); updateFabDot(); updateTopbar();
+        toast(`📌 Caso "${activeCase.fields?.['Nome do Cliente']||activeCase.name}" ativado!`);
+    }
+
+    function doSave(){
+        collectFields();
+        if(!editing?.name){ toast('Informe o nome do caso.','warn'); return; }
+        editing.ts=Date.now();
+        addTimeline(editing,'💾 Caso salvo','');
+        flushToWallet(); renderSidebar();
+        toast(`💾 Caso "${editing.name}" salvo!`);
+    }
+
+    function doCloseCase(){
+        collectFields();
+        if(editing?.name){ editing.ts=Date.now(); flushToWallet(); }
+        if(!activeCase){ toast('Nenhum caso ativo para fechar.','warn'); return; }
+        if(!confirm(`Fechar o caso ativo "${activeCase.fields?.['Nome do Cliente']||activeCase.name}"?\n\nOs dados foram salvos automaticamente.`)) return;
+        addTimeline(activeCase,'⏹ Caso fechado','');
+        flushToWallet();
+        activeCase=null; saveActive(); renderSidebar(); renderFooterStatus(); updateFabDot(); updateTopbar();
+        toast('Caso fechado.','warn');
+    }
+
+    function doDelete(){
+        if(!editing) return;
+        const n=editing.fields?.['Nome do Cliente']||editing.name||'este caso';
+        if(!confirm(`Excluir permanentemente "${n}" da carteira?`)) return;
+        wallet=wallet.filter(c=>c.id!==editing.id);
+        if(activeCase?.id===editing.id){ activeCase=null; saveActive(); }
+        saveWallet(); editing=null; activeTab='global'; renderAll(); updateFabDot();
+        toast('🗑 Caso excluído.','warn');
+    }
+
+    function applySchema(raw){
+        const schema=parseSchema(raw);
+        if(!schema){ toast('JSON inválido ou sem áreas.','error',3500); return false; }
+        if(!editing){ toast('Selecione um caso antes de importar.','warn'); return false; }
+        if(schema.fields){ Object.entries(schema.fields).forEach(([k,v])=>{ if(v&&!editing.fields[k]) editing.fields[k]=v; }); }
+        if(editing.schema&&editing.schema.areas.length){ schema.areas.forEach(na=>{ const idx=editing.schema.areas.findIndex(a=>a.id===na.id); if(idx!==-1) editing.schema.areas[idx]=na; else editing.schema.areas.push(na); }); }
+        else { editing.schema={areas:schema.areas}; }
+        const lastArea=schema.areas[schema.areas.length-1];
+        activeTab=lastArea?.id||editing.schema.areas[0]?.id||'global';
+        addTimeline(editing,'📥 Schema importado',`${schema.areas.length} área(s)`);
+        flushToWallet(); renderTabsBar(); renderContent(); renderSidebar();
+        const fCount=Object.keys(schema.fields||{}).length;
+        toast(`Schema aplicado! ${schema.areas.length} área(s)${fCount>0?`, ${fCount} campo(s) pré-preenchido(s)`:''}.`);
+        return true;
+    }
+
+    function exportSchema(){
+        if(!editing?.schema){ toast('Nenhum schema neste caso.','warn'); return; }
+        const blob=new Blob([JSON.stringify({_legalMindCasoSchema:true,_version:1,_exportedAt:new Date().toISOString(),areas:editing.schema.areas},null,2)],{type:'application/json'});
+        const a=document.createElement('a'); a.href=URL.createObjectURL(blob);
+        a.download=`schema_${(editing.name||'caso').replace(/\s+/g,'_')}_${new Date().toISOString().slice(0,10)}.json`; a.click();
+        toast('📤 Schema exportado!');
+    }
+
+    // ─── NOVO CASO MODAL ──────────────────────────────────────────────────────
+    function openNewCaseModal(){
+        const ov=document.createElement('div'); ov.className='lm-ov';
+        ov.innerHTML=`<div class="lm-modal">
+            <h3>✨ Novo Caso</h3>
+            <p>Preencha a identificação, descreva o caso → gere o prompt → cole na IA → importe o JSON.</p>
+            <div class="lm-mstep" style="background:#0f1e15;border-color:#1e4a28;">
+                <div class="lm-mstep-num" style="color:var(--lm-green);">Identificação do Caso</div>
+                <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px;">
+                    <div>
+                        <label>👤 Nome do Cliente</label>
+                        <input class="lm-inp" type="text" id="nc-client" placeholder="Nome completo">
+                    </div>
+                    <div>
+                        <label>⚖️ Área do Direito</label>
+                        <input class="lm-inp" type="text" id="nc-area" placeholder="Ex: Direito do Trabalho">
+                        <label style="margin-top:8px;">📋 Tipo da Ação</label>
+                        <input class="lm-inp" style="margin-top:4px;" type="text" id="nc-subarea" placeholder="Ex: Auxílio acidente">
+                    </div>
+                </div>
+            </div>
+            <div class="lm-divider"></div>
+            <div class="lm-mstep">
+                <div class="lm-mstep-num">Passo 1 — Descreva o caso</div>
+                <label>Quanto mais informações, mais campos a IA pré-preencherá automaticamente</label>
+                <textarea class="lm-inp" id="nc-desc" placeholder="Ex: Ação trabalhista de dispensa sem justa causa, 8 anos de empresa, PLR não pago..." style="min-height:90px;resize:vertical;"></textarea>
+                <button class="lm-btn lm-btn-primary" id="nc-gen">🤖 Gerar Prompt para IA</button>
+            </div>
+            <div class="lm-divider"></div>
+            <div class="lm-mstep" id="nc-step2" style="display:none;">
+                <div class="lm-mstep-num">Passo 2 — Copie e cole na IA</div>
+                <textarea class="lm-inp lm-prompt-ta" id="nc-prompt" readonly></textarea>
+                <div style="display:flex;gap:8px;align-items:center;">
+                    <button class="lm-btn lm-btn-import" id="nc-copy">📋 Copiar Prompt</button>
+                    <button class="lm-btn lm-btn-inject" id="nc-inject">⚡ Injetar no Chat</button>
+                    <span style="font-size:11.5px;color:var(--lm-text3);">Cole na IA → importe o JSON no Passo 3.</span>
+                </div>
+            </div>
+            <div class="lm-divider"></div>
+            <div class="lm-mstep">
+                <div class="lm-mstep-num">Passo 3 — Importe o JSON</div>
+                <div class="lm-tabs-mini">
+                    <div class="lm-tab-mini act" data-itab="file">📁 Arquivo .json</div>
+                    <div class="lm-tab-mini" data-itab="paste">📋 Colar código</div>
+                </div>
+                <div id="nc-file-area"><button class="lm-btn lm-btn-import" id="nc-file-btn">📁 Selecionar .json</button><input type="file" id="nc-file-inp" style="display:none;" accept=".json"></div>
+                <div id="nc-paste-area" style="display:none;flex-direction:column;gap:10px;">
+                    <label>Cole o JSON aqui:</label>
+                    <textarea class="lm-inp lm-paste-ta" id="nc-paste-ta" placeholder='{"areas":[]}'></textarea>
+                    <button class="lm-btn lm-btn-import" id="nc-paste-btn">✓ Aplicar JSON</button>
+                </div>
+            </div>
+            <div class="lm-divider"></div>
+            <div class="lm-modal-acts">
+                <button class="lm-btn lm-btn-ghost" id="nc-blank">📋 Criar em Branco</button>
+                <button class="lm-btn lm-btn-ghost" id="nc-close">Fechar</button>
+            </div>
+        </div>`;
+        document.body.appendChild(ov);
+
+        ov.querySelector('#nc-gen').onclick=()=>{
+            const desc=ov.querySelector('#nc-desc').value.trim();
+            const client=ov.querySelector('#nc-client').value.trim();
+            const area=ov.querySelector('#nc-area').value.trim();
+            const subarea=ov.querySelector('#nc-subarea').value.trim();
+            if(!desc&&!client){ toast('Descreva o caso ou informe o nome.','warn'); return; }
+            const header=[client?`Cliente: ${client}`:'',area?`Área do Direito: ${area}`:'',subarea?`Tipo da Ação: ${subarea}`:''].filter(Boolean).join('\n');
+            const fullDesc=header?(header+(desc?'\n\n'+desc:'')) : desc;
+            const d=new Date().toLocaleDateString('pt-BR');
+            const fichaContent=[`[${d}] Caso criado.`,client?`\nCliente: ${client}`:null,area?`\nÁrea: ${area}`:null,subarea?`\nTipo: ${subarea}`:null,desc?`\nDescrição:\n${desc}`:null,'\n---'].filter(l=>l!==null).join('');
+            ov._fichaContent=fichaContent; ov._clientName=client;
+            ov.querySelector('#nc-prompt').value=PROMPT_TEMPLATE.replace('{DESCRICAO}',fullDesc);
+            const step2=ov.querySelector('#nc-step2');
+            step2.style.display='flex'; step2.style.flexDirection='column'; step2.style.gap='12px';
+            step2.scrollIntoView({behavior:'smooth',block:'nearest'});
+            toast('📋 Prompt gerado!');
+        };
+        ov.querySelector('#nc-copy').onclick=()=>{ navigator.clipboard.writeText(ov.querySelector('#nc-prompt').value).then(()=>toast('📋 Copiado!')); };
+        ov.querySelector('#nc-inject').onclick=()=>{
+            const content=ov.querySelector('#nc-prompt').value;
+            const plat=detectPlatform();
+            let done=false;
+            if(plat){ const el2=document.querySelector(plat.selector); if(el2){ if(plat.type==='contenteditable'){ el2.focus(); el2.innerHTML=''; document.execCommand('insertText',false,content); if(!el2.textContent.trim()) el2.textContent=content; done=true; } else { el2.focus(); const s=Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype,'value')?.set; if(s) s.call(el2,content); el2.dispatchEvent(new Event('input',{bubbles:true})); done=true; } } }
+            if(done){ ov.remove(); toast(`⚡ Prompt injetado no ${plat?.name||'chat'}!`); }
+            else { navigator.clipboard.writeText(content); toast('Copiado para clipboard — cole manualmente.','warn',4000); }
+        };
+        ov.querySelectorAll('.lm-tab-mini').forEach(t=>{ t.onclick=()=>{ ov.querySelectorAll('.lm-tab-mini').forEach(x=>x.classList.remove('act')); t.classList.add('act'); ov.querySelector('#nc-file-area').style.display=t.dataset.itab==='file'?'':'none'; ov.querySelector('#nc-paste-area').style.display=t.dataset.itab==='paste'?'flex':'none'; }; });
+        ov.querySelector('#nc-file-btn').onclick=()=>ov.querySelector('#nc-file-inp').click();
+        ov.querySelector('#nc-file-inp').onchange=(e)=>{ const f=e.target.files[0]; if(!f) return; const r=new FileReader(); r.onload=(ev)=>{ ov.remove(); createWithSchema(ev.target.result,ov._fichaContent||'',ov._clientName||''); }; r.readAsText(f); e.target.value=''; };
+        ov.querySelector('#nc-paste-btn').onclick=()=>{ const raw=ov.querySelector('#nc-paste-ta').value.trim(); if(!raw){ toast('Cole o JSON.','warn'); return; } ov.remove(); createWithSchema(raw,ov._fichaContent||'',ov._clientName||''); };
+        ov.querySelector('#nc-blank').onclick=()=>{ ov.remove(); createBlank(ov._clientName||'',ov.querySelector('#nc-area')?.value.trim()||'',ov.querySelector('#nc-desc')?.value.trim()||''); };
+        ov.querySelector('#nc-close').onclick=()=>ov.remove();
+        ov.onclick=(e)=>{ if(e.target===ov) ov.remove(); };
+    }
+
+    function openImportModal(){
+        if(!editing){ toast('Selecione um caso antes de importar.','warn'); return; }
+        const ov=document.createElement('div'); ov.className='lm-ov';
+        ov.innerHTML=`<div class="lm-modal" style="max-width:560px;">
+            <h3>📥 Importar Schema JSON</h3>
+            <p>Schema será adicionado ao caso <strong style="color:#f5f5f5;">"${escH(editing.name||'atual')}"</strong>.</p>
+            <div class="lm-tabs-mini">
+                <div class="lm-tab-mini act" data-itab2="file">📁 Arquivo</div>
+                <div class="lm-tab-mini" data-itab2="paste">📋 Colar código</div>
+            </div>
+            <div id="imp-file-area"><button class="lm-btn lm-btn-import" id="imp-file-btn">📁 Selecionar .json</button><input type="file" id="imp-file-inp" style="display:none;" accept=".json"></div>
+            <div id="imp-paste-area" style="display:none;flex-direction:column;gap:10px;">
+                <label>Cole o JSON aqui:</label>
+                <textarea class="lm-inp lm-paste-ta" id="imp-paste-ta" placeholder='{"areas":[]}'></textarea>
+                <button class="lm-btn lm-btn-import" id="imp-paste-btn">✓ Aplicar</button>
+            </div>
+            <div class="lm-modal-acts"><button class="lm-btn lm-btn-ghost" id="imp-close">Fechar</button></div>
+        </div>`;
+        document.body.appendChild(ov);
+        ov.querySelectorAll('.lm-tab-mini').forEach(t=>{ t.onclick=()=>{ ov.querySelectorAll('.lm-tab-mini').forEach(x=>x.classList.remove('act')); t.classList.add('act'); ov.querySelector('#imp-file-area').style.display=t.dataset.itab2==='file'?'':'none'; ov.querySelector('#imp-paste-area').style.display=t.dataset.itab2==='paste'?'flex':'none'; }; });
+        ov.querySelector('#imp-file-btn').onclick=()=>ov.querySelector('#imp-file-inp').click();
+        ov.querySelector('#imp-file-inp').onchange=(e)=>{ const f=e.target.files[0]; if(!f) return; const r=new FileReader(); r.onload=(ev)=>{ if(applySchema(ev.target.result)) ov.remove(); }; r.readAsText(f); e.target.value=''; };
+        ov.querySelector('#imp-paste-btn').onclick=()=>{ const raw=ov.querySelector('#imp-paste-ta').value.trim(); if(!raw){ toast('Cole o JSON.','warn'); return; } if(applySchema(raw)) ov.remove(); };
+        ov.querySelector('#imp-close').onclick=()=>ov.remove();
+        ov.onclick=(e)=>{ if(e.target===ov) ov.remove(); };
+    }
+
+    function createWithSchema(raw,fichaViva,clientName){
+        const schema=parseSchema(raw);
+        if(!schema){ toast('JSON inválido.','error',3500); return; }
+        const preFields=Object.assign({},schema.fields||{});
+        if(clientName) preFields['Nome do Cliente']=clientName;
+        const caseName=clientName||preFields['Nome do Cliente']||'';
+        const nc={id:genId(),name:caseName,fields:preFields,fichaViva:fichaViva||'',ts:Date.now(),schema:{areas:schema.areas},timeline:[],prazo:null,status:'ativo'};
+        addTimeline(nc,'✨ Caso criado',caseName);
+        wallet.unshift(nc); saveWallet(); loadEditing(nc);
+        if(!caseName) document.getElementById('lm-case-name')?.focus();
+        const fCount=Object.keys(preFields).filter(k=>preFields[k]).length;
+        toast(`Caso criado com ${schema.areas.length} área(s)${fCount>0?` e ${fCount} campo(s)`:''}.`);
+    }
+
+    function createBlank(clientName,area,desc){
+        const d=new Date().toLocaleDateString('pt-BR');
+        const preFields={}; if(clientName) preFields['Nome do Cliente']=clientName;
+        const fichaViva=(clientName||area||desc)?[`[${d}] Caso criado em branco.`,clientName?`\nCliente: ${clientName}`:'',area?`\nÁrea: ${area}`:'',desc?`\nDescrição:\n${desc}`:'','\n---'].join('') : '';
+        const nc={id:genId(),name:clientName||'',fields:preFields,fichaViva,ts:Date.now(),schema:null,timeline:[],prazo:null,status:'ativo'};
+        addTimeline(nc,'✨ Caso criado em branco',clientName||'');
+        wallet.unshift(nc); saveWallet(); loadEditing(nc);
+        document.getElementById('lm-case-name')?.focus();
+        toast('Novo caso em branco. Preencha e ative!');
+    }
+
+    // ─── PANEL ────────────────────────────────────────────────────────────────
+    function buildPanel(){
+        if(document.getElementById('lm-panel')) return;
+        const panel=document.createElement('div'); panel.id='lm-panel';
+        panel.innerHTML=`
+            <div id="lm-top">
+                <div id="lm-top-icon">📌</div>
+                <div><div style="margin:0;font-size:14px;font-weight:700;color:#f5f5f5;">LegalMind OS <span style="font-size:10px;color:var(--lm-green);font-weight:400;letter-spacing:.5px;">v4.0</span></div><div id="lm-top-sub">Painel de Gestão de Casos</div></div>
+                <div id="lm-top-r"><span class="lm-kbd">Ctrl+Shift+C</span><button id="lm-close" title="Fechar">✕</button></div>
+            </div>
+            <div id="lm-prog-bar"><div id="lm-prog-track"><div id="lm-prog-fill"></div></div><div id="lm-prog-lbl">Selecione um caso</div></div>
+            <div id="lm-body">
+                <div id="lm-sidebar">
+                    <div id="lm-sb-top">
+                        <input type="text" id="lm-sb-search" placeholder="🔍 Buscar cliente...">
+                        <button id="lm-btn-new">＋ Novo Caso</button>
+                        <button id="lm-btn-dashboard">📊 Dashboard</button>
+                    </div>
+                    <div id="lm-az-list"></div>
+                </div>
+                <div id="lm-main">
+                    <div id="lm-tabs-wrapper"></div>
+                    <div id="lm-content"></div>
+                    <div id="lm-dashboard"></div>
+                    <div id="lm-ficha">
+                        <div class="lm-ficha-hdr">
+                            <span class="lm-ficha-title">📋 Ficha Viva</span>
+                            <span class="lm-ficha-hint">Injetada via {{Ficha Viva do Caso}}</span>
+                            <button class="lm-ficha-btn" id="lm-ficha-toggle">▾ Recolher</button>
+                            <button class="lm-ficha-btn" id="lm-ficha-copy">📋 Copiar</button>
+                        </div>
+                        <textarea id="lm-ficha-ta" placeholder="Cole resultados da IA aqui. Acumule o histórico. Será injetada nos prompts com {{Ficha Viva do Caso}}."></textarea>
+                        <div id="lm-wc">0 palavras</div>
+                    </div>
+                </div>
+            </div>
+            <div id="lm-footer">
+                <div id="lm-footer-status">Nenhum caso ativo.</div>
+                <button class="lm-btn lm-btn-ghost" id="lm-btn-export" style="font-size:11.5px;padding:6px 11px;">📤 Exportar</button>
+                <button class="lm-btn lm-btn-import" id="lm-btn-import" style="font-size:11.5px;padding:6px 11px;">📥 Importar</button>
+                <button class="lm-btn lm-btn-danger" id="lm-btn-del" style="font-size:11.5px;padding:6px 11px;">🗑 Excluir</button>
+                <button class="lm-btn lm-btn-inject" id="lm-btn-inject" style="font-size:11.5px;padding:6px 11px;">⚡ Injetar</button>
+                <button class="lm-btn lm-btn-master" id="lm-btn-master" style="font-size:11.5px;padding:6px 11px;">🧠 Mestre</button>
+                <button class="lm-btn lm-btn-save" id="lm-btn-save">💾 Salvar</button>
+                <button class="lm-btn lm-btn-close-case" id="lm-btn-close-case">⏹ Fechar</button>
+                <button class="lm-btn lm-btn-primary" id="lm-btn-activate">📌 Ativar</button>
+            </div>`;
+        document.body.appendChild(panel);
+
+        panel.querySelector('#lm-close').onclick=hidePanel;
+        panel.querySelector('#lm-sb-search').addEventListener('input',e=>{ sidebarQ=e.target.value; renderSidebar(); });
+        panel.querySelector('#lm-btn-new').onclick=openNewCaseModal;
+        panel.querySelector('#lm-btn-dashboard').onclick=()=>{ if(activeDashboard) hideDashboard(); else showDashboard(); };
+
+        const ft=panel.querySelector('#lm-ficha-ta'), wc=panel.querySelector('#lm-wc');
+        ft.addEventListener('input',()=>{ if(editing) editing.fichaViva=ft.value; wc.textContent=wCount(ft.value); });
+        let fc=false;
+        panel.querySelector('#lm-ficha-toggle').onclick=()=>{ fc=!fc; ft.style.display=fc?'none':''; wc.style.display=fc?'none':''; panel.querySelector('#lm-ficha-toggle').textContent=fc?'▸ Expandir':'▾ Recolher'; };
+        panel.querySelector('#lm-ficha-copy').onclick=()=>{ if(!ft.value.trim()){toast('Ficha Viva vazia.','warn');return;} navigator.clipboard.writeText(ft.value).then(()=>toast('📋 Ficha Viva copiada!')); };
+
+        panel.querySelector('#lm-btn-activate').onclick=doActivate;
+        panel.querySelector('#lm-btn-save').onclick=doSave;
+        panel.querySelector('#lm-btn-close-case').onclick=doCloseCase;
+        panel.querySelector('#lm-btn-del').onclick=doDelete;
+        panel.querySelector('#lm-btn-export').onclick=exportSchema;
+        panel.querySelector('#lm-btn-import').onclick=openImportModal;
+        panel.querySelector('#lm-btn-master').onclick=()=>doGerarPromptMestre();
+        panel.querySelector('#lm-btn-inject').onclick=()=>openInjectModal();
+
+        makeDraggable(panel,panel.querySelector('#lm-top'));
+        renderSidebar(); renderTabsBar(); renderContent(); renderFooterStatus();
+    }
+
+    function makeDraggable(panel,handle){
+        let ox=0,oy=0;
+        handle.onmousedown=(e)=>{
+            e.preventDefault(); ox=e.clientX-panel.getBoundingClientRect().left; oy=e.clientY-panel.getBoundingClientRect().top;
+            const mm=(ev)=>{ panel.style.right='auto'; panel.style.bottom='auto'; panel.style.left=`${Math.max(0,Math.min(ev.clientX-ox,window.innerWidth-panel.offsetWidth))}px`; panel.style.top=`${Math.max(0,Math.min(ev.clientY-oy,window.innerHeight-panel.offsetHeight))}px`; };
+            const mu=()=>{ document.removeEventListener('mousemove',mm); document.removeEventListener('mouseup',mu); };
+            document.addEventListener('mousemove',mm); document.addEventListener('mouseup',mu);
+        };
+    }
+
+    function createFab(){ const fab=document.createElement('button'); fab.id='lm-fab'; fab.title='LegalMind OS (Ctrl+Shift+C)'; fab.innerHTML='⚖️<span id="lm-fab-dot"></span>'; fab.onclick=togglePanel; document.body.appendChild(fab); updateFabDot(); }
+    function updateFabDot(){ document.getElementById('lm-fab-dot')?.classList.toggle('on',!!activeCase?.name); }
+    function togglePanel(){ panelOpen?hidePanel():showPanel(); }
+    function showPanel(){
+        panelOpen=true; activeCase=loadActive(); wallet=loadWallet();
+        buildPanel();
+        document.getElementById('lm-panel').classList.add('open');
+        document.getElementById('lm-fab').classList.add('open');
+        if(activeCase&&!editing) loadEditing(activeCase);
+    }
+    function hidePanel(){
+        panelOpen=false;
+        document.getElementById('lm-panel')?.classList.remove('open');
+        document.getElementById('lm-fab')?.classList.remove('open');
+    }
+
+    document.addEventListener('keydown',(e)=>{ if(e.ctrlKey&&e.shiftKey&&e.key==='C'){e.preventDefault();togglePanel();} if(e.key==='Escape'&&panelOpen) hidePanel(); });
+
+    function init(){
+        createFab();
+        buildTopbar();
+        updateTopbar();
+        buildFeedBtn();
+        initSelectionListener();
+    }
+    if(document.body) init(); else document.addEventListener('DOMContentLoaded',init);
+
+})();
